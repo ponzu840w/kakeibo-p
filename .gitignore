@@ -1,0 +1,18 @@
+# ---- 個人データ(gitに入れない) ----
+# data/ が個人データの実体(またはOneDrive等へのシンボリックリンク)。
+# CLAUDE.md は data/CLAUDE.md へのリンク。
+/data
+/CLAUDE.md
+
+# ---- 派生物(build.pyで再生成可能・ローカルのみ) ----
+/ledger/
+/site/data.js
+
+# ---- デモ(demo/build_demo.py で再生成可能) ----
+/demo/data/
+/demo/ledger/
+
+# ---- その他 ----
+__pycache__/
+*.pyc
+note.txt

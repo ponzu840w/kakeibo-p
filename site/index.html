@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kakeibo-p</title>
+<!-- ファビコン: ロゴ(kakeibo-p)と同じ書体・色の "k"。外部ファイルなしの
+     インラインSVGで、タブのダーク/ライトにも追従する -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cstyle%3Etext{font:700 34px system-ui,-apple-system,sans-serif;fill:%230b0b0b}@media(prefers-color-scheme:dark){text{fill:%23fff}}%3C/style%3E%3Ctext x='16' y='28' text-anchor='middle'%3Ek%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>kakeibo-p</h1>
+    <nav class="seg" id="tabs">
+      <button data-tab="summary" class="on">概要</button>
+      <button data-tab="assets">資産</button>
+      <button data-tab="salary">給与</button>
+      <button data-tab="flow">収支</button>
+      <button data-tab="year">年次</button>
+      <button data-tab="plan">計画</button>
+      <button data-tab="ledger">明細</button>
+    </nav>
+    <span class="allok" id="ok-chip" style="display:none">✓ 情報鮮度OK</span>
+    <span class="gen" id="generated"></span>
+    <button class="icon-btn" id="import-btn" style="display:none"
+            title="明細ファイル(CSV/HTML)を選んで data/inbox に取込→再ビルド。ページへのドラッグ&ドロップでも可">⤓ 取込</button>
+    <button class="icon-btn" id="rebuild-btn" style="display:none"
+            title="再ビルド(build.py を実行して再読込)">↻</button>
+    <button class="icon-btn" id="buildlog-btn"
+            title="ビルドログ(取込・検証の実行履歴)">ログ</button>
+    <input type="file" id="import-file" multiple style="display:none">
+  </header>
+  <div id="drop-overlay" hidden><div>明細ファイルをドロップで取込</div></div>
+
+  <div class="globals">
+    <span class="mode-switch" id="income-mode"
+          title="手取り: 給与の法定控除(社会保険料・税)を収入側で差し引く。社食等の任意控除は支出のまま">
+      <span>収入</span>
+      <span class="pills">
+        <button data-mode="gross">総支給</button>
+        <button data-mode="net">手取り</button>
+      </span>
+    </span>
+    <label class="switch-label" title="明細表から振替・調整の行を隠す">
+      <span>振替を隠す</span>
+      <span class="switch"><input type="checkbox" id="g-hide-transfer"><i></i></span>
+    </label>
+  </div>
+
+  <!-- 情報鮮度モニタ: 取込サボりの検知はこのシステムの生命線 -->
+  <details class="card warn-card" id="warnings-card" style="display:none">
+    <summary><span id="warn-summary"></span><span class="chev">▼</span></summary>
+    <div class="warn-list" id="warnings"></div>
+  </details>
+
+  <div class="filters tabbed" data-tabs="flow ledger" id="filters">
+    <div class="seg" id="period-seg"></div>
+    <select id="f-account"><option value="">全口座</option></select>
+    <select id="f-category"><option value="">全カテゴリ</option></select>
+    <input type="search" id="f-search" placeholder="摘要を検索">
+    <span class="ledger-flags tabbed" data-tabs="ledger">
+      <label class="switch-label" title="カテゴリを手動で上書きした明細だけ表示">
+        <span>上書きあり</span>
+        <span class="switch"><input type="checkbox" id="f-override"><i></i></span>
+      </label>
+      <label class="switch-label" title="コメントを付けた明細だけ表示">
+        <span>コメントあり</span>
+        <span class="switch"><input type="checkbox" id="f-comment"><i></i></span>
+      </label>
+    </span>
+  </div>
+
+  <div class="tabbed" data-tabs="summary">
+    <div class="kpi-row">
+      <button type="button" class="info-btn" id="sum-kpi-info"
+              title="タイルの計算の前提を表示">i</button>
+      <div class="kpis" id="sum-kpis"></div>
+    </div>
+    <div class="count-note" id="sum-kpi-note" hidden></div>
+    <div class="card link" data-goto="assets">
+      <h2>資産構成</h2>
+      <div id="sum-comp"></div>
+    </div>
+    <div class="grid2">
+      <div class="card link" data-goto="assets">
+        <h2>純資産の推移</h2>
+        <div id="sum-networth"></div>
+      </div>
+      <div class="card link" data-goto="flow">
+        <h2>月次収支(直近12ヶ月)</h2>
+        <div class="chart-scroll" id="sum-monthly"></div>
+      </div>
+      <div class="card link" data-goto="flow">
+        <h2>月内の資金推移(直近6ヶ月)</h2>
+        <div id="sum-osc"></div>
+      </div>
+      <div class="card link" data-goto="flow">
+        <h2>直近30日のカテゴリ</h2>
+        <div id="sum-top"></div>
+      </div>
+      <div class="card" id="upcoming-card" style="display:none">
+        <h2>引落予定</h2>
+        <div id="upcoming-list"></div>
+        <div class="count-note">取込済みの確定請求のうち、まだ引き落とされていないもの</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tabbed" data-tabs="assets">
+    <div class="kpis" id="as-kpis"></div>
+
+    <div class="card">
+      <h2>資産構成</h2>
+      <div id="as-comp"></div>
+    </div>
+
+    <!-- 純資産の推移とリスク評価は横並び。行の高さは長い方(通常リスク評価)が
+         決め、純資産チャートは余った縦に合わせて伸びる(tab-assets fitNetWorth) -->
+    <div class="chart-grid" style="margin-bottom:16px">
+      <div class="card" id="networth-card" style="margin-bottom:0">
+        <h2>純資産の推移</h2>
+        <div id="as-networth"></div>
+      </div>
+      <div class="card" id="risk-card" style="margin-bottom:0">
+        <h2>リスク評価</h2>
+        <div class="chart-scroll" id="risk-exposure"></div>
+        <div class="kpis" id="risk-scenarios"
+             style="margin:12px 0 0;grid-template-columns:1fr"></div>
+        <div class="count-note">資産応答%は総資産比</div>
+      </div>
+    </div>
+
+    <div class="card" id="yield-card">
+      <h2>運用</h2>
+      <div class="chart-grid">
+        <div>
+          <h2 style="margin-bottom:8px">運用益の内訳</h2>
+          <div id="yield-parts"></div>
+        </div>
+        <div>
+          <h2 style="margin-bottom:8px">運用益の月次推移</h2>
+          <div class="legend" id="yield-legend"></div>
+          <div class="chart-scroll" id="yield-monthly"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="invest-card">
+      <h2>投資</h2>
+      <div class="kpis" id="invest-kpis" style="margin-bottom:12px"></div>
+      <div class="chart-grid">
+        <div>
+          <h2 style="margin-bottom:8px">投資構成比率</h2>
+          <div class="chart-scroll" id="invest-alloc-chart"></div>
+        </div>
+        <div>
+          <h2 style="margin-bottom:8px">月次買付・売却(直近12ヶ月)</h2>
+          <div class="chart-scroll" id="invest-chart"></div>
+        </div>
+      </div>
+      <div class="chart-grid" style="margin-top:16px">
+        <div>
+          <h2 style="margin-bottom:8px">元本と評価額</h2>
+          <div class="legend">
+            <span class="key"><span class="swatch" style="background:var(--seq)"></span>元本(累積取得額)</span>
+            <span class="key"><span class="swatch" style="background:var(--ink)"></span>評価額(実測点+元本連動補完)</span>
+            <span class="key"><span class="swatch" style="height:3px;border-radius:2px;background:repeating-linear-gradient(90deg,var(--cat1) 0 5px,transparent 5px 9px)"></span>含み益(評価額−元本)</span>
+          </div>
+          <div class="chart-scroll" id="invest-cost-chart"></div>
+        </div>
+        <div>
+          <h2 style="margin-bottom:8px">受取配当・分配金(年次)</h2>
+          <div class="chart-scroll" id="invest-div-chart"></div>
+          <div class="count-note">証券口座への配当入金と投信の分配金再投資の年間合計</div>
+        </div>
+      </div>
+      <div style="margin-top:16px">
+        <h2 style="margin-bottom:8px">保有銘柄</h2>
+        <div class="tbl-scroll">
+          <table id="holdings-table">
+            <thead><tr><th>銘柄</th><th style="text-align:right">取得</th>
+            <th style="text-align:right">現在</th><th style="text-align:right">損益</th>
+            <th style="text-align:right">評価額</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <!-- 表の「次の行」の位置に置く展開ボタン(鮮度モニタと同じ作法) -->
+        <div class="howto-btn" id="holdings-more" hidden
+             style="padding:6px 8px 0"></div>
+      </div>
+    </div>
+
+    <div class="card" id="dc-card" hidden>
+      <h2>企業型DCの内訳</h2>
+      <div class="kpis" id="dc-kpis"></div>
+      <div class="count-note" id="dc-note"></div>
+    </div>
+
+    <div class="card">
+      <h2>口座と残高</h2>
+      <div class="tbl-scroll">
+        <table id="accounts-table">
+          <thead><tr><th>口座</th><th>種別</th><th>明細範囲</th>
+          <th style="text-align:right">残高</th><th>時点</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="count-note">残高のない口座は data/raw/manual/balances.csv に
+        「日付,口座ID,残高」を記入すると反映される(負債は未払額を負で)。
+        ●は鮮度: 期待更新間隔内 / 超過 / 2倍超過</div>
+    </div>
+
+  </div>
+
+  <div class="tabbed" data-tabs="flow">
+    <div class="kpis">
+      <div class="tile"><div class="label">収入</div><div class="value" id="kpi-income"></div><div class="sub" id="kpi-income-sub">振替・調整除く</div></div>
+      <div class="tile"><div class="label">支出</div><div class="value" id="kpi-expense"></div><div class="sub">振替・調整除く</div></div>
+      <div class="tile"><div class="label">収支</div><div class="value" id="kpi-net"></div><div class="sub" id="kpi-net-sub"></div></div>
+      <div class="tile"><div class="label">貯蓄率</div><div class="value" id="kpi-rate"></div><div class="sub">期間合算 収支÷収入</div></div>
+    </div>
+
+    <div class="chart-grid" style="margin-bottom:16px">
+      <div class="card" style="margin-bottom:0">
+        <h2>月次収支</h2>
+        <div class="legend">
+          <span class="key"><span class="swatch" style="background:var(--income)"></span>収入</span>
+          <span class="key"><span class="swatch" style="background:var(--expense)"></span>支出</span>
+          <span class="key"><span class="swatch" style="height:3px;border-radius:2px;background:var(--ink)"></span>収支</span>
+        </div>
+        <div class="chart-scroll" id="monthly-chart"></div>
+      </div>
+      <div class="card" style="margin-bottom:0">
+        <h2>支出の内訳</h2>
+        <div id="drilldown"></div>
+        <div class="count-note">クリックで展開: 中分類 → カテゴリ → 店・摘要 → 明細</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>カテゴリ別支出の推移</h2>
+      <div class="legend" id="trend-legend"></div>
+      <div class="chart-scroll" id="trend-chart"></div>
+    </div>
+
+    <div class="card" id="osc-card">
+      <h2>月内の資金推移</h2>
+      <div class="legend">
+        <span class="seg small" id="osc-mode">
+          <button data-m="cash">口座収支</button>
+          <button data-m="flow">実質収支</button>
+        </span>
+        <span>濃いほど新しい月・当月は前景色の太線。月初=0。
+          薄い帯=過去月の25〜75%レンジ(破線=中央値)</span>
+      </div>
+      <div class="chart-scroll" id="osc-chart"></div>
+      <div class="count-note" id="osc-note"></div>
+    </div>
+
+    <div class="card" id="flow-card">
+      <div class="card-head">
+        <h2>資金の流れ</h2>
+        <span class="seg small" id="flow-mode">
+          <button data-fm="transfer" class="on">口座間ＮＷ</button>
+          <button data-fm="budget">収支サンキー</button>
+        </span>
+      </div>
+      <div class="chart-scroll" id="flow-sankey"></div>
+      <div class="count-note" id="flow-note"></div>
+    </div>
+
+    <div class="grid2">
+      <div class="card" id="yoy-card">
+        <div class="card-head">
+          <h2>前年同月比</h2>
+          <span class="seg small" id="yoy-mode">
+            <button data-k="expense" class="on">支出</button>
+            <button data-k="income">収入</button>
+          </span>
+        </div>
+        <div class="legend" id="yoy-legend"></div>
+        <div class="chart-scroll" id="yoy-chart"></div>
+        <div class="count-note" id="yoy-note"></div>
+      </div>
+      <div class="card">
+        <h2>貯蓄率</h2>
+        <div class="legend">
+          <span class="key"><span class="swatch" style="background:var(--income)"></span>月次(収支÷収入)</span>
+          <span class="key"><span class="swatch" style="background:var(--seq)"></span>6ヶ月移動</span>
+        </div>
+        <div class="chart-scroll" id="savings-chart"></div>
+      </div>
+    </div>
+
+    <div class="card" id="subs-history-card">
+      <h2>定期支出の履歴</h2>
+      <div class="legend" id="subs-history-legend"></div>
+      <div class="chart-scroll" id="subs-history-chart"></div>
+      <div class="count-note">支払った月に計上。下の帯ほど長く続いている系列。凡例クリックで系列の表示/非表示</div>
+    </div>
+
+    <div class="card" id="subs-card">
+      <h2>定期支出</h2>
+      <div class="tbl-scroll">
+        <table id="subs-table">
+          <thead><tr><th>名称</th><th style="text-align:right">月額換算</th>
+          <th>周期</th><th>出現月数</th><th>直近</th>
+          <th style="text-align:right">年換算</th>
+          <th style="text-align:right">累計支払</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="count-note">rules.toml の [[recurring]] 宣言に一致した支出を集計。月額換算は直近3出現月の中央値（年払いは直近支払額÷12）。薄い行は直近の支払いなし
+      </div>
+    </div>
+
+    <div class="card" id="heatmap-card">
+      <h2>日別の支出</h2>
+      <div class="chart-scroll" id="heatmap-chart"></div>
+      <div class="count-note" id="heatmap-note"></div>
+    </div>
+  </div>
+
+  <div class="tabbed" data-tabs="plan">
+    <!-- ---- 資金繰り(短期。数ヶ月先まで、確定した入出金ベース) ---- -->
+    <div class="section-head">
+      <h2>資金繰り</h2>
+    </div>
+    <div class="kpis" id="plan-kpis"></div>
+
+    <div class="card" id="cashflow-card">
+      <div class="card-head">
+        <h2>資金繰り予測</h2>
+        <span class="seg small" id="cf-horizon">
+          <button data-mo="1">1ヶ月</button>
+          <button data-mo="2">2ヶ月</button>
+          <button data-mo="3" class="on">3ヶ月</button>
+        </span>
+      </div>
+      <div class="legend" id="cf-legend"></div>
+      <div class="chart-scroll" id="cashflow-chart"></div>
+      <div class="count-note" id="cf-note"></div>
+    </div>
+
+    <div class="card" id="cf-events-card">
+      <h2>今後に予定/予測される入出金</h2>
+      <div class="tbl-scroll">
+        <table id="cf-events-table">
+          <thead><tr><th>日付</th><th>口座</th><th>内容</th>
+          <th>根拠</th><th style="text-align:right">金額</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="count-note">3ヶ月分を表示(薄い行はチャート外)。"定期検出"=過去の出現から推定。"確定"=カード請求の確定額。"給与"=直近の月給の振込日と金額の中央値。</div>
+    </div>
+
+    <!-- ---- 資産形成(長期。年単位、貯蓄ペースと運用利回りベース) ---- -->
+    <div class="section-head">
+      <h2>資産形成</h2>
+    </div>
+
+    <div class="card" id="longterm-card">
+      <div class="card-head">
+        <h2>純資産の長期予測</h2>
+        <span class="head-slider" title="投影する年数(1〜40年)">
+          <label for="lt-years">予測年数</label>
+          <input type="range" id="lt-years" min="1" max="40" step="1" value="5">
+          <span class="whatif-val" id="lt-years-val">5年</span>
+        </span>
+      </div>
+      <div class="legend">
+        <span id="lt-legend"></span>
+      </div>
+      <div class="chart-scroll" id="longterm-chart"></div>
+      <div class="count-note" id="lt-note"></div>
+    </div>
+
+    <div class="card" id="whatif-card">
+      <div class="card-head">
+        <h2>条件設定</h2>
+        <span class="switch-label"
+              title="スライダーの初期値・▲マーカーの元にする実績の期間。自動=現在の給与体制が始まった月以降(就労前の無収入月で平均が沈まないようにする)">
+          <span>実績の参照期間</span>
+          <span class="seg small" id="lt-base">
+            <button data-b="auto" class="on">自動</button>
+            <button data-b="3">3ヶ月</button>
+            <button data-b="6">6ヶ月</button>
+            <button data-b="12">12ヶ月</button>
+          </span>
+        </span>
+        <button class="icon-btn" id="whatif-reset" title="設定を初期化">リセット</button>
+      </div>
+      <div class="whatif-grid">
+        <div class="whatif-col">
+          <div class="whatif-label">定期支出の解約</div>
+          <div id="whatif-subs"></div>
+        </div>
+        <div class="whatif-col">
+          <div class="whatif-label">月次貯蓄額
+            <span id="whatif-saving-val" class="whatif-val"></span></div>
+          <div class="slider-wrap">
+            <input type="range" id="whatif-saving" min="-100000" max="300000" step="5000" value="0">
+            <span class="slider-ref" id="whatif-saving-ref"></span>
+          </div>
+          <div class="whatif-label" style="margin-top:14px">月次貯蓄投資率(左=投資・右=現金)
+            <span id="whatif-invest-val" class="whatif-val"></span></div>
+          <div class="slider-wrap">
+            <input type="range" id="whatif-invest" class="ratio-slider" min="0" max="100" step="1" value="0">
+            <span class="slider-ref" id="whatif-invest-ref"></span>
+          </div>
+          <div id="whatif-loan-row">
+            <div class="whatif-label" style="margin-top:14px">借入返済額(/月)
+              <span id="whatif-loan-val" class="whatif-val"></span></div>
+            <div class="slider-wrap">
+              <input type="range" id="whatif-loan" min="0" max="50000" step="1000" value="4000">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="count-note">長期予測にだけ反映(資金繰り予測は実データのまま)。貯蓄・投資の初期値は
+        実績(参照期間の月平均)に追従し、スライダーを動かすと固定値になる。▲=いま選んでいる参照期間の
+        実績(クリックで実績追従に戻す)。投資率は内部では月額で保持され、貯蓄額を動かすと率でなく額を
+        維持する(貯蓄額を超えることはない)。「解約」は貯蓄に上乗せ。</div>
+    </div>
+  </div>
+
+  <div class="tabbed" data-tabs="salary">
+    <div class="kpis" id="sal-kpis"></div>
+    <div class="card">
+      <div class="card-head">
+        <h2>給与と控除の内訳と推移</h2>
+        <div class="triswitch" id="sal-mode">
+          <span class="lbl">給与</span>
+          <span class="dots">
+            <button data-mode="pay" title="給与のみ"></button>
+            <button data-mode="both" title="給与と控除の両方" class="on"></button>
+            <button data-mode="ded" title="控除のみ"></button>
+          </span>
+          <span class="lbl">控除</span>
+        </div>
+      </div>
+      <div class="legend" id="sal-pay-legend"></div>
+      <div class="legend" id="sal-ded-legend"></div>
+      <div class="chart-scroll" id="sal-month-chart"></div>
+    </div>
+    <div class="card">
+      <h2>手取り率の推移</h2>
+      <div class="legend">
+        <span class="key"><span class="swatch" style="width:10px;height:10px;border-radius:50%;background:var(--seq)"></span>月給(法定控除)</span>
+        <span class="key"><span class="swatch" style="width:10px;height:10px;border-radius:50%;background:none;border:2.5px solid var(--seq);box-sizing:border-box"></span>月給(全控除)</span>
+        <span class="key"><span class="swatch" style="width:10px;height:10px;border-radius:50%;background:var(--cat4)"></span>賞与(法定=全控除)</span>
+      </div>
+      <div class="chart-scroll" id="sal-rate-chart"></div>
+    </div>
+    <div class="card" id="work-card" style="display:none">
+      <h2>勤務と単価(給与明細より)</h2>
+      <div class="chart-grid">
+        <div>
+          <h2 style="margin-bottom:8px">時間外時間の推移</h2>
+          <div class="chart-scroll" id="work-chart"></div>
+          <h2 style="margin:12px 0 8px">休暇取得の推移</h2>
+          <div class="chart-scroll" id="vac-chart"></div>
+        </div>
+        <div>
+          <h2 style="margin-bottom:8px">勤務内容等の全項目</h2>
+          <div class="tbl-scroll">
+            <table id="work-table"><thead></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </div>
+      <div class="count-note">
+        N月発行の給与明細には、N-1月次の勤怠が記録されている。このズレを補正し、勤怠・休暇・単価は行われた月のデータとして表示。<br>
+        「付与」を含む項目（有給付与日数等）のみ例外的に発行月をそのまま付与月として計上（給与と同様）。
+      </div>
+    </div>
+  </div>
+
+  <div class="tabbed" data-tabs="year">
+    <div class="kpis" id="yr-kpis"></div>
+    <div class="card">
+      <h2>年次サマリ</h2>
+      <div class="tbl-scroll">
+        <table id="yr-table">
+          <thead><tr><th>年</th><th style="text-align:right">収入</th>
+          <th style="text-align:right">支出</th><th style="text-align:right">収支</th>
+          <th style="text-align:right">貯蓄率</th><th style="text-align:right">年末純資産</th>
+          <th style="text-align:right">純資産増減</th><th style="text-align:right">社会保険料</th>
+          <th style="text-align:right">税</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="count-note" id="yr-note"></div>
+    </div>
+    <div class="card">
+      <h2>年間支出のカテゴリ内訳</h2>
+      <div class="legend" id="yr-cat-legend"></div>
+      <div class="chart-scroll" id="yr-cat-chart"></div>
+      <div class="count-note">支出を中分類で束ねた年間合計の積み上げ。収入モード(総支給/手取り)に追従する</div>
+    </div>
+  </div>
+
+  <div class="tabbed" data-tabs="ledger">
+    <details class="card fold" id="uncls-card" style="display:none">
+      <summary><span id="uncls-summary"></span><span class="chev">▼</span></summary>
+      <div id="uncls-list"></div>
+      <div class="count-note">クリックで絞り込みを解除してその摘要を検索。繰り返し出るものは
+        rules.toml にルールを足すのが本筋(上書きは単発の例外用)</div>
+    </details>
+    <div class="card">
+      <h2>明細</h2>
+      <div class="tbl-scroll">
+        <table id="txn-table">
+          <thead><tr><th>日付</th><th>口座</th><th>摘要</th><th>カテゴリ</th><th style="text-align:right">金額</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="count-note"><span id="txn-count"></span>
+        <button class="howto-btn" id="csv-btn"
+                title="現在の絞り込み結果(この表と同じ行)をCSVでダウンロード">CSVダウンロード</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-bg" id="modal-bg" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="modal-title"></h2>
+      <button class="close" id="modal-close">✕</button>
+    </div>
+    <div class="kpis" id="modal-kpis"></div>
+    <div id="modal-prov" style="display:none"></div>
+    <div class="grid2">
+      <div>
+        <h3 id="modal-h-left">収入</h3>
+        <div id="modal-income"></div>
+      </div>
+      <div>
+        <h3 id="modal-h-right">支出の内訳(クリックで展開)</h3>
+        <div id="modal-drill"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-bg" id="watch-bg" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="watch-title"></h2>
+      <button class="close" id="watch-close">✕</button>
+    </div>
+    <div class="kpis" id="watch-kpis"></div>
+    <div class="grid2">
+      <div>
+        <h3>月次の支出と単価</h3>
+        <div class="chart-scroll" id="watch-chart"></div>
+      </div>
+      <div>
+        <h3>直近の明細(クリックで明細タブへ)</h3>
+        <div id="watch-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-bg" id="holdings-bg" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="holdings-title">保有銘柄</h2>
+      <button class="close" id="holdings-close">✕</button>
+    </div>
+    <div class="tbl-scroll">
+      <table id="holdings-full-table">
+        <thead><tr><th>銘柄</th><th style="text-align:right">取得</th>
+        <th style="text-align:right">現在</th><th style="text-align:right">損益</th>
+        <th style="text-align:right">評価額</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<div class="modal-bg" id="buildlog-bg" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>ビルドログ</h2>
+      <button class="close" id="buildlog-close">✕</button>
+    </div>
+    <p class="count-note">build.py の直近実行履歴。全履歴は data/build_log.jsonl。</p>
+    <div id="buildlog-list"></div>
+  </div>
+</div>
+<div id="tooltip"></div>
+
+<script src="data.js"></script>
+<!-- data.js(実データ・git外)が無いときのフォールバック。デモデータは
+     demo/build_demo.py で生成する。実データがあれば読み込まれても無視される -->
+<script src="data.demo.js"></script>
+<script src="js/core.js"></script>
+<script src="js/svgkit.js"></script>
+<script src="js/svgkit-network.js"></script>
+<script src="js/stats.js"></script>
+<script src="js/schedule.js"></script>
+<script src="js/tab-assets.js"></script>
+<script src="js/tab-flow.js"></script>
+<script src="js/tab-flow-network.js"></script>
+<script src="js/tab-salary.js"></script>
+<script src="js/tab-ledger.js"></script>
+<script src="js/tab-plan.js"></script>
+<script src="js/tab-watch.js"></script>
+<script src="js/tab-year.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

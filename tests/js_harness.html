@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>kakeibo js harness</title>
+<!-- ブラウザをJSテストの実行係として使うためのアダプタ(Windows など
+     jsc の無い環境向け)。test_js.py が headless ブラウザで開き、
+     dump-dom で本文の結果マーカー(RESULT〜END)の中身を回収する。
+     読み込み順は tests/test_js.py の JS_FILES と揃えること。 -->
+<body>
+<script>
+  // jsc の print() 相当。結果JSONを本文に置いて dump-dom で拾わせる
+  globalThis.print = function (s) {
+    document.body.textContent = "@@KAKEIBO_RESULT@@" + s + "@@END@@";
+  };
+  // ハーネス実行中のエラーも本文に出す(黙って空になるのを防ぐ)
+  window.addEventListener("error", function (e) {
+    document.body.textContent =
+      "@@KAKEIBO_ERROR@@" + e.message + "@@END@@";
+  });
+</script>
+<script src="js_fixture.js"></script>
+<script src="../site/js/core.js"></script>
+<script src="../site/js/stats.js"></script>
+<script src="../site/js/schedule.js"></script>
+<script src="js_harness.js"></script>
+</body>

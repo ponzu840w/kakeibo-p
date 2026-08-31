@@ -1,0 +1,617 @@
+:root {
+  color-scheme: light;
+  --page:      #f9f9f7;
+  --surface:   #fcfcfb;
+  --ink:       #0b0b0b;
+  --ink-2:     #52514e;
+  --muted:     #898781;
+  --grid:      #e1e0d9;
+  --baseline:  #c3c2b7;
+  --border:    rgba(11,11,11,0.10);
+  --income:    #0d9fc4;   /* 収入 (シアン。証券=cat1の青と区別する) */
+  --expense:   #eb6834;   /* 支出 (categorical slot: orange) */
+  --seq:       #5a55cf;   /* 分析・予測・UI操作の中立色(インディゴ。
+                             証券=cat1のアズールとは別物にする) */
+  --seq-track: #dedcf8;
+  --good:      #0ca30c;
+  --warning:   #fab219;
+  --critical:  #d03b3b;
+  --up:        #006300;
+  /* 月次・年次チャートで現在月(年次は現在年)の列に敷く帯。棒・線の
+     視認性を落とさないよう、地の色との差が分かる最小限の濃さに留める */
+  --now-band:  rgba(250,178,25,0.13);
+  /* カテゴリ積み上げ用(参照パレットの固定順スロット1〜8+その他) */
+  --cat1: #2a78d6; --cat2: #008300; --cat3: #f75492;
+  --cat4: #eda100; --cat5: #1baf7a; --cat6: #eb6834;
+  --cat7: #8a5cd0; --cat8: #7a8699; --cat9: #9c6b3f;
+  --cat-other: #898781;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page:      #0d0d0d;
+    --surface:   #1a1a19;
+    --ink:       #ffffff;
+    --ink-2:     #c3c2b7;
+    --muted:     #898781;
+    --grid:      #2c2c2a;
+    --baseline:  #383835;
+    --border:    rgba(255,255,255,0.10);
+    --income:    #2cb4d8;
+    --expense:   #d95926;
+    --seq:       #7d78ea;
+    --seq-track: #2e2c6e;
+    --up:        #0ca30c;
+    --now-band:  rgba(250,178,25,0.16);
+    --cat1: #3987e5; --cat2: #008300; --cat3: #d55181;
+    --cat4: #c98500; --cat5: #199e70; --cat6: #d95926;
+    --cat7: #9b6fe0; --cat8: #7a8699; --cat9: #b07f4e;
+    --cat-other: #898781;
+  }
+}
+* { box-sizing: border-box; margin: 0; }
+body {
+  background: var(--page); color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  font-size: 14px; line-height: 1.5;
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding: 20px 16px 60px; }
+header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; }
+header h1 { font-size: 20px; font-weight: 700; }
+header .gen { color: var(--muted); font-size: 12px; margin-left: auto; }
+header .allok { color: var(--good); font-size: 12px; }
+
+/* 取込・再ビルド(serve.py 配信時のみ表示) */
+.icon-btn { border: 1px solid var(--border); background: var(--surface);
+            color: var(--ink-2); font: inherit; font-size: 12px;
+            padding: 3px 9px; border-radius: 8px; cursor: pointer; }
+.icon-btn:hover { color: var(--ink); }
+.icon-btn:disabled { opacity: .6; cursor: default; }
+.icon-btn.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#drop-overlay { position: fixed; inset: 0; z-index: 90;
+                background: color-mix(in srgb, var(--page) 70%, transparent);
+                display: flex; align-items: center; justify-content: center; }
+#drop-overlay[hidden] { display: none; }
+#drop-overlay > div { border: 2px dashed var(--ink-2); border-radius: 16px;
+                      padding: 40px 60px; font-size: 18px; color: var(--ink);
+                      background: var(--surface); pointer-events: none; }
+.toast { position: fixed; right: 16px; bottom: 16px; z-index: 95;
+         max-width: min(480px, 90vw); background: var(--surface);
+         border: 1px solid var(--border); border-radius: 10px;
+         box-shadow: 0 6px 24px rgba(0,0,0,.15); padding: 12px 16px;
+         font-size: 12px; white-space: pre-wrap; cursor: pointer; }
+
+/* グローバル設定(全タブ共通・控えめに右寄せ) */
+.globals { display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+           justify-content: flex-end; margin: -4px 0 12px; font-size: 12px;
+           color: var(--muted); }
+.mode-switch { display: inline-flex; align-items: center; gap: 6px; }
+.mode-switch .pills { display: inline-flex; background: var(--grid);
+                      border-radius: 999px; padding: 2px; }
+.mode-switch button { border: 0; background: none; color: var(--muted);
+                      font: inherit; font-size: 12px; padding: 2px 10px;
+                      border-radius: 999px; cursor: pointer; }
+.mode-switch button.on { background: var(--surface); color: var(--ink);
+                         font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.switch-label { display: inline-flex; gap: 7px; align-items: center; cursor: pointer; }
+.switch { position: relative; display: inline-block; width: 30px; height: 18px; }
+.switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.switch i { position: absolute; inset: 0; background: var(--grid);
+            border-radius: 999px; transition: background .15s; pointer-events: none; }
+.switch i::after { content: ""; position: absolute; top: 2px; left: 2px;
+                   width: 14px; height: 14px; border-radius: 50%;
+                   background: var(--surface); transition: transform .15s;
+                   box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+.switch input:checked + i { background: var(--seq); }
+.switch input:checked + i::after { transform: translateX(12px); }
+.switch.sm { width: 26px; height: 16px; }
+.switch.sm i::after { width: 12px; height: 12px; }
+.switch.sm input:checked + i::after { transform: translateX(10px); }
+/* serve.py 経由でないとき(file://)は状態変更不可のグレーアウト */
+.switch input:disabled { cursor: not-allowed; }
+.switch input:disabled + i { opacity: 0.45; }
+
+/* カード見出しの右肩にコントロールを置くヘッダ行 */
+.card-head { display: flex; justify-content: space-between;
+             align-items: baseline; gap: 8px; }
+
+/* What-if パネル(計画タブ) */
+.whatif-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+               gap: 18px; margin: 6px 0 4px; }
+.whatif-label { font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
+.whatif-val { color: var(--seq); font-weight: 600; margin-left: 6px; }
+/* スライダーは UI操作の中立色(--seq)。青は証券のイメージカラーなので
+   既定の青い accent のままにしない */
+.whatif-col input[type=range] { width: 100%; accent-color: var(--seq); }
+/* 投資率スライダー: トラック自体を つまみ位置で 投資(証券色)|現金(銀行色)
+   に塗り分ける。背景グラデーションはJSが値に合わせて更新する */
+input[type=range].ratio-slider {
+  -webkit-appearance: none; appearance: none;
+  height: 6px; border-radius: 3px; outline: none; margin: 7px 0;
+  background: var(--grid);
+}
+input[type=range].ratio-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--surface); border: 2px solid var(--seq);
+  cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.25);
+}
+input[type=range].ratio-slider::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--surface); border: 2px solid var(--seq);
+  cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.25);
+}
+/* スライダー下の実績マーカー(▲)。left はJSが calc で置く */
+.slider-wrap { position: relative; padding-bottom: 9px; }
+.slider-ref { position: absolute; bottom: 0; width: 0; height: 0;
+              transform: translateX(-50%); cursor: pointer;
+              border-left: 5px solid transparent;
+              border-right: 5px solid transparent;
+              border-bottom: 7px solid var(--seq); }
+/* カード見出しに置く小さなスライダー(長期予測の年数)。値ラベルは幅を
+   固定して、動かしてもスライダーの位置が揺れないようにする */
+.head-slider { display: flex; align-items: center; gap: 8px;
+               font-size: 12px; color: var(--ink-2); min-width: 0; }
+/* 狭い画面ではスライダーだけが縮む(ラベルと値は読めるまま残す) */
+.head-slider label, .head-slider .whatif-val { flex: none; }
+.head-slider input[type=range] { flex: 0 1 150px; width: 150px; min-width: 60px;
+                                 accent-color: var(--seq); }
+.head-slider .whatif-val { min-width: 3.4em; text-align: right; margin-left: 0; }
+.whatif-sub { display: flex; align-items: center; gap: 8px; font-size: 12.5px;
+              padding: 3px 0; }
+.whatif-sub input { margin: 0; }
+.whatif-sub.dropped label { text-decoration: line-through; color: var(--muted); }
+.whatif-sub .amt { margin-left: auto; color: var(--muted);
+                   font-variant-numeric: tabular-nums; }
+/* 3点スイッチ(o-o-o)。両端のラベルが極、点を選んで切り替える */
+.triswitch { display: inline-flex; align-items: center; gap: 7px; }
+.triswitch .lbl { font-size: 11px; color: var(--muted); }
+.triswitch .dots { position: relative; display: inline-flex;
+                   align-items: center; gap: 9px; }
+.triswitch .dots::before { content: ""; position: absolute; left: 5px;
+                           right: 5px; top: 50%; height: 2px; margin-top: -1px;
+                           background: var(--grid); }
+.triswitch .dots button { position: relative; width: 11px; height: 11px;
+                          padding: 0; border: 2px solid var(--muted);
+                          border-radius: 50%; background: var(--surface);
+                          cursor: pointer; }
+.triswitch .dots button:hover { border-color: var(--ink-2); }
+.triswitch .dots button.on { background: var(--seq); border-color: var(--seq); }
+.howto-btn.off { opacity: 0.45; cursor: not-allowed; }
+
+/* 支出ドリルダウン */
+.dd-row { display: flex; align-items: center; gap: 8px; padding: 5px 0;
+          border-bottom: 1px solid var(--grid); cursor: pointer; font-size: 13px; }
+.dd-row .tri { flex: none; width: 12px; color: var(--muted); font-size: 10px;
+               transition: transform .12s; text-align: center; }
+.dd-row.open .tri { transform: rotate(90deg); }
+/* 名前列は縮んでもよい(…省略)が、バーのトラックは最低幅を保証する */
+.dd-row .dd-name { flex: 0 1 170px; min-width: 0; overflow: hidden;
+                   text-overflow: ellipsis; white-space: nowrap; }
+.dd-row .dd-track { flex: 1 0 90px; }
+.dd-row .dd-bar { height: 10px; background: var(--expense); border-radius: 3px; min-width: 2px; }
+.dd-row .dd-amt { flex: none; width: 86px; text-align: right; font-variant-numeric: tabular-nums; }
+.dd-row .dd-pct { flex: none; width: 42px; text-align: right; color: var(--muted);
+                  font-size: 11px; font-variant-numeric: tabular-nums; }
+/* 狭幅では金額・%・トラックを詰めて名前列に幅を譲る
+   (名前の過剰省略を防ぐ) */
+@media (max-width: 480px) {
+  .dd-row .dd-amt { width: 74px; font-size: 12px; }
+  .dd-row .dd-pct { width: 34px; }
+  .dd-row .dd-track { flex-basis: 56px; }
+}
+.dd-children { margin-left: 18px; }
+.dd-leaf { display: flex; gap: 10px; padding: 3px 0 3px 22px; font-size: 12px;
+           color: var(--ink-2); border-bottom: 1px solid var(--grid);
+           cursor: pointer; }
+.dd-leaf:hover { color: var(--ink); }
+.dd-leaf .d { flex: none; width: 84px; }
+.dd-leaf .a { margin-left: auto; font-variant-numeric: tabular-nums; }
+.dd-leaf .go { flex: none; color: var(--muted); }
+
+/* 月詳細モーダル */
+.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.42); z-index: 20;
+            display: flex; align-items: flex-start; justify-content: center;
+            padding: 5vh 16px; }
+.modal { background: var(--surface); border: 1px solid var(--border);
+         border-radius: 12px; max-width: 900px; width: 100%; max-height: 88vh;
+         overflow-y: auto; padding: 18px 20px;
+         box-shadow: 0 12px 40px rgba(0,0,0,.3); }
+.modal-head { display: flex; align-items: center; margin-bottom: 12px; }
+.modal-head h2 { font-size: 16px; font-weight: 700; }
+.modal-head .close { margin-left: auto; border: 0; background: none;
+                     font-size: 20px; color: var(--muted); cursor: pointer; }
+.modal h3 { font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 6px 0 8px; }
+.modal .grid2 { margin-bottom: 0; }
+.modal .grid2 > div { min-width: 0; }   /* 長い摘要でも列が等幅を保つ */
+.inc-row { display: flex; gap: 10px; padding: 4px 0; font-size: 13px;
+           border-bottom: 1px solid var(--grid); cursor: pointer; }
+.inc-row:hover { color: var(--ink); }
+.inc-row .d { flex: none; width: 84px; color: var(--ink-2); }
+.inc-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+               min-width: 0; }
+.inc-row .a { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--up);
+              flex: none; }
+
+/* 月詳細(当月)の着地見込み内訳 */
+#modal-prov { margin-bottom: 14px; }
+#modal-prov .prov-row { display: flex; gap: 10px; padding: 4px 0; font-size: 13px;
+                        align-items: baseline; border-bottom: 1px solid var(--grid); }
+#modal-prov .l { flex: none; width: 96px; font-weight: 600; }
+#modal-prov .s { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis;
+                 white-space: nowrap; min-width: 0; }
+#modal-prov .a { margin-left: auto; font-variant-numeric: tabular-nums; flex: none; }
+#modal-prov .prov-row.pos .a { color: var(--up); font-weight: 600; }
+#modal-prov .prov-row.neg .a { color: var(--critical); font-weight: 600; }
+#modal-prov .prov-row.link { cursor: pointer; }
+#modal-prov .prov-row.link:hover .s { color: var(--ink); }
+/* 狭幅では採用理由(.s)を省略記号で潰さず2行目に落とす */
+@media (max-width: 520px) {
+  #modal-prov .prov-row { flex-wrap: wrap; row-gap: 0; }
+  #modal-prov .s { order: 3; flex-basis: 100%; white-space: normal; }
+}
+
+/* 明細の詳細展開行(分類根拠など) */
+#txn-table tbody tr:not(.txn-detail) { cursor: pointer; }
+tr.txn-detail td { background: var(--page); font-size: 12px; color: var(--ink-2);
+                   padding: 8px 12px 10px 24px; }
+tr.txn-detail .item { display: block; margin: 1px 0; }
+tr.txn-detail .k { color: var(--muted); margin-right: 8px; }
+tr.focus td { background: var(--seq-track); }
+
+/* タブ */
+.tabbed:not(.active) { display: none; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px; margin-bottom: 16px;
+}
+.card h2 { font-size: 14px; font-weight: 600; color: var(--ink-2); margin-bottom: 12px; }
+.card.link { cursor: pointer; }
+.card.link:hover { border-color: var(--baseline); }
+.tile.link { cursor: pointer; }
+.tile.link:hover { border-color: var(--baseline); }
+
+/* タブ内をテーマで区切る見出し(計画タブの資金繰り/資産形成など)。
+   カードより一段上のレベルであることが分かるよう、上に罫線を引いて余白を取る */
+.section-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+                margin: 4px 0 12px; padding-top: 14px;
+                border-top: 1px solid var(--border); }
+.section-head:first-child { padding-top: 0; border-top: none; }
+.section-head h2 { font-size: 16px; font-weight: 700; color: var(--ink);
+                   margin: 0; }
+
+/* 折りたたみカード(鮮度モニタ・未分類ランキング) */
+details.warn-card, details.fold { padding: 8px 16px; }
+details.warn-card summary, details.fold summary {
+  cursor: pointer; font-size: 13px; color: var(--ink-2); list-style: none;
+  display: flex; align-items: center; gap: 8px;
+}
+details.warn-card summary::-webkit-details-marker,
+details.fold summary::-webkit-details-marker { display: none; }
+details.warn-card summary .chev, details.fold summary .chev {
+  color: var(--muted); font-size: 11px; margin-left: auto; }
+details.warn-card[open] summary .chev,
+details.fold[open] summary .chev { transform: rotate(180deg); }
+details.fold > .count-note { margin-bottom: 8px; }
+/* 9列グリッド(●アイコン/口座/日付4列(明細末端・取込・経過・次回目安)/
+   操作3列(手順・更新確認・通知トグル)。行生成は main.js renderFreshness)。
+   各列は内容の最大幅で揃え、全体は左詰め——操作類が縦に揃いつつ右に飛ばない */
+.warn-list { display: grid; grid-template-columns: repeat(9, max-content);
+             justify-content: start; align-items: center;
+             gap: 7px 14px; margin-top: 10px; font-size: 13px;
+             overflow-x: auto; }
+.warn-item { display: contents; }
+.warn-h { font-size: 11px; color: var(--muted); }
+.warn-item .icon { width: 8px; height: 8px; border-radius: 50%; background: var(--warning); }
+.warn-item.stale .icon { background: var(--critical); }
+.warn-item.fresh .icon { background: var(--good); }
+.warn-item.muted .icon { background: var(--grid); }
+.warn-item.muted, .warn-item.muted a, .warn-item.muted .msg { color: var(--muted); }
+.warn-item a { color: var(--ink); }
+.warn-item .msg { color: var(--ink-2); }
+.howto-btn { color: var(--seq); cursor: pointer; font-size: 12px;
+             white-space: nowrap; text-decoration: underline dotted; }
+/* 手順の展開ボックス。日付4列(次回目安)の右端までで折り返す。
+   width:0 で列幅計算への寄与を消し、min-width で自エリア幅まで戻す
+   ——開閉で手順ボタン以降の列位置が動かないようにするため。
+   残り3列は .howto-fill(main.jsが対で挿入)が埋め、自動配置を崩さない */
+.howto-box { grid-column: 1 / 7; width: 0; min-width: calc(100% - 16px);
+             box-sizing: border-box; margin: -2px 0 2px 16px;
+             font-size: 12px; color: var(--ink-2);
+             background: var(--page); border-left: 2px solid var(--grid);
+             padding: 4px 10px;
+             white-space: pre-line; /* howtoの改行(TOML複数行文字列)を活かす */ }
+.howto-fill { grid-column: 7 / -1; }
+.warn-list > .more-btn { grid-column: 1 / -1; justify-self: start; margin-top: 2px; }
+
+/* フィルタ行 */
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+/* 明細タブ専用の絞り込み(上書きあり/コメントあり)。tabbed の表示切替が
+   インラインstyleに負けないよう display はクラスで持つ */
+.ledger-flags { display: inline-flex; gap: 14px; align-items: center; margin-left: 6px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.seg button {
+  border: 0; background: none; color: var(--ink-2); padding: 6px 12px;
+  font: inherit; font-size: 13px; cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.on { background: var(--ink); color: var(--surface); font-weight: 600; }
+.seg.small button { padding: 4px 10px; font-size: 12px; }
+.filters select, .filters input[type="search"] {
+  font: inherit; font-size: 13px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px;
+}
+/* KPI */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 12px; margin-bottom: 16px; }
+/* タイル行の脚注トグル。特定タイルの内側に重ねると「そのタイルの注釈」に
+   見えるので、上の情報鮮度モニタとタイル行の隙間(ややタイル寄り)に
+   浮かせて、行全体への注釈であることを示す */
+/* 隙間の拡張は margin だと上カードの margin-bottom と相殺されるので padding で */
+.kpi-row { position: relative; padding-top: 6px; }
+.kpi-row .info-btn { position: absolute; top: -11px; right: 0; z-index: 2;
+  width: 14px; height: 14px; padding: 0; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); font: italic 600 9px/12px Georgia, serif;
+  cursor: pointer; }
+.kpi-row .info-btn:hover { border-color: var(--seq); color: var(--seq); }
+.kpi-row .info-btn.on { background: var(--seq); border-color: var(--seq);
+  color: var(--surface); }
+/* サマリタイル直下の脚注はタイル側に寄せる(下のカードの注記に見えないように) */
+#sum-kpi-note { margin: -8px 0 16px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.tile .label { font-size: 12px; color: var(--muted); }
+.tile .value { font-size: 22px; font-weight: 600; margin-top: 2px;
+               text-align: center; }
+.tile .value.small { font-size: 19px; }
+/* sub はスペース区切りの項(「収入40万 −固定11万 …」等)で折り返す。
+   keep-all でCJKの項中折返しを止め(項内の空白はJS側でNBSP)、幅を超える
+   項だけ緊急折返しに任せる。2行目以降は式の続きと分かるようぶら下げ字下げ */
+.tile .sub { font-size: 11.5px; color: var(--muted); margin-top: 2px;
+             word-break: keep-all; overflow-wrap: anywhere;
+             padding-left: 1em; text-indent: -1em; }
+/* 式でないsub(1行1項目の並記)はぶら下げインデントを外す */
+.tile .sub.plain { padding-left: 0; text-indent: 0; }
+.tile .value.pos { color: var(--up); }
+.tile .value.neg { color: var(--critical); }
+.tile .value.warn { color: var(--warning); }
+/* タイル内の左右2値(運用効率の全期/6ヶ月)。各値の下に期間ラベルを置き、
+   セルは等分+縦罫で区切る。セル内は値・ラベルとも中央寄せ */
+/* タイルの左右padding(14px)へ食い込ませてセルを枠まで広げる。等分セル+
+   中央寄せなので、枠に対する余白とセパレータに対する余白が等しくなる */
+.tile .split { display: flex; margin: 0 -14px; }
+.tile .split > div { flex: 1; min-width: 0; text-align: center; }
+.tile .split > div + div { border-left: 1px solid var(--border); }
+/* 2値並びは通常の value だと狭幅でセパレータに接するため small と同じ19px */
+.tile .split .value { font-size: 19px; }
+.tile .split .sub { margin-top: 0; padding-left: 0; text-indent: 0; }
+/* split 直下の損益行(中央寄せ・字下げなし) */
+.tile .split-gains { text-align: center; margin-top: 6px;
+                     padding-left: 0; text-indent: 0; }
+
+/* チャート */
+.chart-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+/* 固定幅の横スクロールチャートがトラックを押し広げてページごと膨張しない
+   よう、グリッドアイテムを縮小可能にする(はみ出しは各チャートが内側で
+   横スクロールして吸収する)。子はカードのことも裸のdivのこともある */
+.chart-grid > * { min-width: 0; }
+@media (min-width: 860px) { .chart-grid { grid-template-columns: 3fr 2fr; } }
+.grid2 { display: grid; grid-template-columns: 1fr; gap: 16px; margin-bottom: 16px; }
+@media (min-width: 860px) { .grid2 { grid-template-columns: 1fr 1fr; } }
+.grid2 > .card { margin-bottom: 0; min-width: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 12px; color: var(--ink-2); margin-bottom: 8px; align-items: center; }
+.legend .key { display: inline-flex; align-items: center; gap: 6px; }
+.legend .swatch { width: 12px; height: 12px; border-radius: 3px; }
+/* 定期支出の履歴: 凡例クリックで系列を隠せる。off=非表示中 */
+#subs-history-legend .key { cursor: pointer; user-select: none; }
+#subs-history-legend .key.off { opacity: .4; text-decoration: line-through; }
+svg text { font-family: inherit; }
+.axis-label { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.bar-label { font-size: 11px; fill: var(--ink-2); font-variant-numeric: tabular-nums; }
+.bar-label-sm { font-size: 9.5px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.seg-label { font-size: 11px; fill: #fff; fill-opacity: .95; font-weight: 600;
+             font-variant-numeric: tabular-nums; }
+.cat-name { font-size: 12px; fill: var(--ink-2); }
+/* ホバー強調の縁取り。チャートの図形(svgkit.js hlMark)とツールチップの
+   ドーナツ扇形(ttDonut)が共用する。見た目の調整はここ1箇所 */
+.hl-outline { fill: none; stroke: var(--ink-2); stroke-width: 1.2;
+              stroke-linejoin: round; pointer-events: none; }
+.chart-scroll { overflow-x: auto; }
+
+/* 純資産推移カード: 同じ行のリスク評価カードが決める行の高さまで
+   チャート領域を伸ばす(実際の描画高さは tab-assets fitNetWorth が合わせる) */
+#networth-card { display: flex; flex-direction: column; }
+#networth-card > #as-networth { flex: 1; min-height: 0; }
+
+/* 純資産推移: Y軸固定+プロット横スクロール */
+.nw-head { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.nw-wrap { display: flex; align-items: flex-start; }
+.nw-wrap svg { flex-shrink: 0; }
+.nw-scroll { overflow-x: auto; flex: 1; min-width: 0; }
+
+/* 月次チャート共通: Y軸(左svg)を固定し本体だけ横スクロール(scrollChart)。
+   データが増えても棒を縮めず、はみ出す過去へ遡れる */
+.hscroll-wrap { display: flex; align-items: flex-start; }
+.hscroll-wrap > svg { flex-shrink: 0; }
+.hscroll { overflow-x: auto; flex: 1; min-width: 0; }
+
+/* 資産構成の凡例 */
+.comp-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 12px; color: var(--ink-2); }
+.comp-legend .key { display: inline-flex; align-items: center; gap: 6px; }
+.comp-legend .val { font-variant-numeric: tabular-nums; color: var(--ink); }
+.comp-legend .val.neg { color: var(--critical); }
+.comp-legend .pct { color: var(--muted); }
+
+/* 引落予定 */
+.due-row { display: flex; gap: 10px; align-items: baseline; padding: 5px 0;
+           font-size: 13px; border-top: 1px solid var(--grid); }
+.due-row:first-child { border-top: 0; }
+.due-row .d { flex: none; width: 84px; color: var(--ink-2);
+              font-variant-numeric: tabular-nums; }
+.due-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.due-row .in { flex: none; font-size: 11.5px; color: var(--muted); }
+.due-row .a { margin-left: auto; flex: none;
+              font-variant-numeric: tabular-nums; }
+.due-row.total { border-top: 1px solid var(--baseline); font-weight: 600; }
+.due-row.soon .in { color: var(--warning); }
+
+/* 未分類ランキング(ルール追加の候補) */
+.uncls-row { display: flex; gap: 10px; align-items: baseline; padding: 4px 0;
+             font-size: 13px; cursor: pointer; color: var(--ink-2); }
+.uncls-row:hover { color: var(--ink); }
+.uncls-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uncls-row .n { flex: none; margin-left: auto; color: var(--muted);
+                font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.uncls-row .a { flex: none; width: 86px; text-align: right;
+                font-variant-numeric: tabular-nums; }
+
+/* 鮮度ドット */
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; background: var(--muted); vertical-align: 1px; }
+.dot.ok { background: var(--good); }
+.dot.warn { background: var(--warning); }
+.dot.crit { background: var(--critical); }
+
+/* ツールチップ */
+#tooltip {
+  /* モーダル(z-index:20)内のチャートでも隠れないよう上に置く */
+  position: fixed; pointer-events: none; z-index: 30; display: none;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.15);
+  min-width: 130px;
+  /* 画面に収まらない場合は showTip が全体を縮小し、moveTip が画面内に
+     クランプする(overflowで行を切り落とさない) */
+  transform-origin: 0 0;
+  /* 表示時は showTip が display:grid にする。行(.tt-row)を display:contents
+     で列に流し込み、%列・金額列の幅を全行で共有する(行ごとのflexでは
+     金額の桁数が違う行で%列の位置がずれる) */
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  column-gap: 6px; align-items: center;
+}
+#tooltip > :not(.tt-row) { grid-column: 1 / -1; }
+#tooltip .tt-title { color: var(--muted); margin-bottom: 4px; }
+#tooltip .tt-sec { color: var(--muted); font-size: 11px; font-weight: 600;
+                   border-top: 1px solid var(--border);
+                   margin-top: 6px; padding-top: 4px; }
+#tooltip .tt-row { display: contents; }
+#tooltip .tt-key { grid-column: 1; width: 9px; height: 9px; border-radius: 2px; }
+#tooltip .tt-val { grid-column: 4; font-weight: 600; padding-left: 10px;
+                   text-align: right; font-variant-numeric: tabular-nums; }
+#tooltip .tt-pct { grid-column: 3; text-align: right;
+                   color: var(--muted); font-variant-numeric: tabular-nums; }
+#tooltip .tt-name { grid-column: 2; color: var(--ink-2); }
+#tooltip .tt-val.neg { color: var(--critical); }
+/* 資産|負債のドーナツペアの見出し(ドーナツの真下、控えめに)。
+   総額は少し立てて、負債は赤字 */
+#tooltip .tt-cap { text-align: center; color: var(--muted); font-size: 11px;
+                   margin: -4px 0 2px; }
+#tooltip .tt-cap-v { color: var(--ink); font-weight: 600;
+                     font-variant-numeric: tabular-nums; }
+#tooltip .tt-cap-v.neg { color: var(--critical); }
+
+/* テーブル */
+.tbl-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px;
+     border-bottom: 1px solid var(--baseline); padding: 6px 8px; white-space: nowrap; }
+td { border-bottom: 1px solid var(--grid); padding: 6px 8px; vertical-align: top; }
+/* 口座と残高: 種別「クレジットカード(負債)」や「明細DL」がセル内で折り
+   返さないよう1行固定。幅が足りなければ .tbl-scroll の横スクロールに任せる */
+#accounts-table td { white-space: nowrap; }
+/* 日付・口座など桁の決まった列は狭幅でも折り返さない(スマホで日付が
+   3行に割れるのを防ぐ)。幅が足りなければ .tbl-scroll の横スクロールに任せる */
+#txn-table td:nth-child(-n+2), #yr-table td:first-child,
+#cf-events-table td:first-child { white-space: nowrap; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.num.pos { color: var(--up); }
+td.num.neg { color: var(--critical); }
+tr.transfer td, tr.adjustment td { color: var(--muted); }
+/* 定期支出テーブル: 出現が止まった終了系列は減光 */
+tr.sub-ended td { color: var(--muted); }
+/* 勤務内容等テーブル: 在籍前の対象月(所定値だけの行)は減光 */
+tr.pre-hire td { color: var(--muted); }
+.badge { display: inline-block; font-size: 11px; color: var(--ink-2);
+         border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; white-space: nowrap; }
+/* 未分類は編集を促す色(クリック→詳細展開で分類を付けられる) */
+.badge.uncls { color: var(--warning); border-color: var(--warning); }
+/* 予定入出金の表: チャート表示期間より先の行(常に3ヶ月分出すため) */
+#cf-events-table tr.faint td { opacity: .45; }
+/* 背景の上に置くSVG文字(軸・値・名前ラベル)は、グリッド線やエッジと
+   交差しても読めるよう背景色で縁取る(paint-order で縁が文字の後ろに
+   回る)。棒などの要素の中に書く文字(seg-label)には付けない */
+.axis-label, .bar-label, .bar-label-sm, .cat-name, .net-label {
+  paint-order: stroke; stroke: var(--surface);
+  stroke-width: 3px; stroke-linejoin: round; }
+/* 長期投影の凡例: JSで生成する .key の入れ物。素のspanだとキー同士が
+   密着するので、.legend と同じ間隔で並べる */
+#lt-legend { display: inline-flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+/* 定点観測の「定点」ボタン */
+.watch-btn { font: inherit; font-size: 11px; padding: 2px 8px; }
+.cmt-mark { margin-left: 5px; font-size: 11px; cursor: help; }
+.count-note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+/* 明細詳細内の編集フォーム(カテゴリ上書き・コメント) */
+.txn-edit { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+            margin-top: 7px; }
+.txn-edit input { font: inherit; font-size: 12px; padding: 3px 8px;
+                  border: 1px solid var(--border); border-radius: 6px;
+                  background: var(--surface); color: var(--ink); }
+.txn-edit input.cmt { flex: 1; min-width: 180px; }
+.txn-edit button { font: inherit; font-size: 12px; padding: 3px 12px;
+                   border: 1px solid var(--border); border-radius: 6px;
+                   background: var(--surface); color: var(--seq); cursor: pointer; }
+.txn-edit button:hover { border-color: var(--seq); }
+/* serve.py 経由でないとき(file://)は編集不可のグレーアウト */
+.txn-edit :disabled { opacity: 0.45; cursor: not-allowed; }
+.txn-edit button:disabled:hover { border-color: var(--border); }
+.txn-edit .ro-note { color: var(--muted); font-size: 11px; }
+.acct-link a { color: var(--ink-2); font-size: 12px; }
+
+/* 中分類の色見本(明細のカテゴリバッジ・カテゴリ選択)。色は中分類色 */
+.cat-sw { display: inline-block; flex: none; width: 8px; height: 8px;
+          border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+/* カテゴリ選択(明細の上書きUI)。既存カテゴリの一覧が主で、新規作成の
+   ボタンは最下部に常置(既存名と重なる間は無効) */
+.catpick { position: relative; display: inline-flex; }
+.txn-edit .catpick-cur { display: inline-flex; align-items: baseline; gap: 6px;
+                         max-width: 300px; color: var(--ink); }
+.catpick-cur .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catpick-cur .nm.empty { color: var(--muted); }
+.catpick-cur .catpick-chev { color: var(--muted); font-size: 10px; }
+.catpick-grp-label { flex: none; color: var(--muted); font-size: 11px; }
+.catpick-grp-label.new { color: var(--warning); }
+/* テーブルの overflow に切られないよう fixed(位置と高さはJSが画面に合わせる) */
+.catpick-menu { position: fixed; z-index: 25; display: flex; flex-direction: column;
+                padding: 6px; border: 1px solid var(--baseline); border-radius: 8px;
+                background: var(--surface);
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18); }
+.catpick-menu[hidden] { display: none; }
+.txn-edit .catpick-q { width: 100%; }
+.catpick-opts { overflow-y: auto; margin: 5px 0 0; }
+.catpick-grp { position: sticky; top: 0; display: flex; align-items: center;
+               padding: 6px 6px 2px; background: var(--surface);
+               color: var(--muted); font-size: 11px; }
+.catpick-opt { display: flex; align-items: center; padding: 4px 8px;
+               border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+.catpick-opt:hover { background: var(--grid); }
+.catpick-opt.on { color: var(--seq); font-weight: 600; }
+.catpick-opt.clear { color: var(--muted); }
+.catpick-new { margin-top: 5px; padding-top: 6px; border-top: 1px solid var(--border); }
+.txn-edit .catpick-mk { width: 100%; text-align: left; }
+.txn-edit .catpick-mk:disabled { color: var(--muted); cursor: default; }
+/* 明細詳細セルは #txn-table td の nowrap を継いでいるので、注記だけ折り返す */
+.catpick-new .warn { margin-top: 4px; color: var(--muted); font-size: 11px;
+                     white-space: normal; }
+
+/* ---- ビルドログモーダル(ヘッダ「ログ」ボタン) ---- */
+.bl-entry { border-top: 1px solid var(--border); padding: 6px 0; }
+.bl-entry summary { cursor: pointer; font-size: 13px; }
+.bl-entry.bl-fail summary { color: var(--critical); }
+.bl-line { font-size: 12px; padding: 1px 0 1px 14px; }
+.bl-line.bl-info { color: var(--muted); }
+.bl-line.bl-warn, .bl-line.bl-verify { color: var(--critical); }
+.bl-line.bl-gone { color: var(--muted); text-decoration: line-through; }
+.bl-new { color: var(--seq); border: 1px solid var(--seq); border-radius: 4px;
+          font-size: 10px; padding: 0 3px; margin-right: 5px; }
+.bl-error { font-size: 11px; color: var(--critical); overflow-x: auto;
+            padding-left: 14px; }

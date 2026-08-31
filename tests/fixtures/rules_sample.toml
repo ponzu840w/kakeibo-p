@@ -1,0 +1,114 @@
+# テスト用の縮小ルールセット(架空)。実運用の data/rules.toml とは独立で、
+# 分類・振替・ペアリング・require_pair・since の「機構」を検証するためのもの。
+# 実ルールを書き換えてもテストが壊れないよう、テストはこちらを読む。
+
+[[transfer]]
+account = "yucho"
+pattern = '^自払 セゾン'
+counter = "saison"
+
+[[transfer]]
+account = "yucho"
+pattern = '^自払 AP\(SBIシヨウケン'
+counter = "sbisec"
+pair_window = 10
+
+[[transfer]]
+account = "sbisec"
+pattern = '^定時定額買付金の入金'
+counter = "yucho"
+pair_window = 10
+
+[[transfer]]
+account = "yucho"
+pattern = '^RT \(PAYPAY\)'
+counter = "paypay"
+
+[[transfer]]
+account = "paypay"
+pattern = '^チャージ ゆうちょ銀行'
+counter = "yucho"
+
+[[transfer]]
+account = "yucho"
+pattern = '^(給与|賞与)$'
+counter = "kyuyo"
+since = "2026-04-01"
+
+[[transfer]]
+account = "saison"
+pattern = '^モバイルスイカ$'
+counter = "suica"
+require_pair = true
+
+[[transfer]]
+account = "suica"
+pattern = '^カード モバイル'
+counter = "saison"
+
+[[transfer]]
+account = "suica"
+pattern = '^オート'
+counter = "viewcard"
+
+[[rule]]
+pattern = '^給与$'
+category = "給与"
+type = "income"
+
+[[rule]]
+account = "suica"
+pattern = '^(バス等|入 |定 )'
+category = "交通"
+
+[[rule]]
+account = "suica"
+pattern = '^物販$'
+category = "物販(Suica)"
+
+[[rule]]
+pattern = 'モバイルスイカ'
+since = 2026-01-10
+category = "交通(定期券・きっぷ)"
+
+[[rule]]
+pattern = 'モバイルスイカ'
+amount_max = -10001
+category = "交通(定期券・きっぷ)"
+
+[[rule]]
+pattern = 'モバイルスイカ'
+category = "交通(Suicaチャージ)"
+
+[[rule]]
+pattern = '通帳未記入金合計'
+category = "通帳未記入(合算)"
+type = "adjustment"
+
+# ---- サブスク宣言(架空)。tag_recurring / recurring_meta / verify_recurring の
+# 機構検証用。上から順に評価し最初の一致を採用
+[[recurring]]
+name = "動画配信"
+pattern = 'ネオフリックス|NEOFLIX\.COM'
+note = "表記揺れは1宣言のパターンで束ねる例"
+
+[[recurring]]
+name = "配信すべて"
+pattern = 'フリックス'
+
+[[recurring]]
+name = "定期券"
+pattern = 'モバイルスイカ'
+
+[[recurring]]
+name = "年会費"
+pattern = '架空年会費'
+cycle = "yearly"
+
+[[recurring]]
+name = "架空仕送り"
+pattern = '架空仕送り'
+kind = "fixed"
+
+[category_groups]
+"交通" = ["交通", "交通(定期券・きっぷ)", "交通(Suicaチャージ)"]
