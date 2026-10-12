@@ -8,7 +8,7 @@
 //     … test_js.py のラッパが vm.runInThisContext で順に評価
 //   ブラウザ(Windows標準のEdge等の headless)
 //     … tests/js_harness.html の script タグ順
-// このファイルは「無いものだけを補う」— ブラウザでは本物の window/document
+// このファイルは「無いものだけを補う」。ブラウザでは本物の window/document
 // をそのまま使う(素のページなので querySelector は null を返し、core.js の
 // トップレベルはそれで動く)。
 if (typeof window === "undefined") {
@@ -115,6 +115,8 @@ var DATA = (function () {
       wallet: { name: "架空ペイ", kind: "asset", group: "決済・電子マネー" },
       sec: { name: "架空証券", kind: "asset", group: "証券" },
       metal: { name: "架空貴金属", kind: "asset", group: "証券" },
+      unsettled: { name: "未受渡の調整", kind: "asset", group: "証券",
+                   synthetic: true },
       kyuyo: { name: "架空給与(清算)", kind: "asset", group: "給与" },
       dc: { name: "架空DC", kind: "asset", group: "年金" },
     },
@@ -130,6 +132,9 @@ var DATA = (function () {
             { date: "2026-08-10", balance: 300000 }],
       metal: [{ date: "2026-05-31", balance: 10000 },
               { date: "2026-08-05", balance: 12500 }],
+      // 7月末をまたぐ未受渡。証券グループを減らすが運用益には入らない
+      unsettled: [{ date: "2026-07-30", balance: -30000 },
+                  { date: "2026-08-03", balance: 0 }],
       dc: [{ date: "2026-06-30", balance: 50000, contrib_total: 50000 },
            { date: "2026-08-05", balance: 53000, contrib_total: 51000 }],
     },

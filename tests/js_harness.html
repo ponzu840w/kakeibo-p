@@ -11,7 +11,7 @@
   globalThis.print = function (s) {
     document.body.textContent = "@@KAKEIBO_RESULT@@" + s + "@@END@@";
   };
-  // ハーネス実行中のエラーも本文に出す(黙って空になるのを防ぐ)
+  // ハーネス実行中のエラーも本文に出す(エラーが見えないまま空になるのを防ぐ)
   window.addEventListener("error", function (e) {
     document.body.textContent =
       "@@KAKEIBO_ERROR@@" + e.message + "@@END@@";

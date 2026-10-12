@@ -20,6 +20,7 @@ import sys
 import tomllib
 import traceback
 from collections import defaultdict
+from bisect import bisect_left
 from datetime import date, datetime
 from statistics import median
 
@@ -29,7 +30,7 @@ from parsers import *    # noqa: F401,F403
 
 def dedup(batches: list[list[Txn]]) -> list[Txn]:
     """ファイル横断の重複排除。同じファイルを2回置いても、期間の重なる
-    ファイルを追加しても増殖しない(冪等取込)。batches はファイルごとの
+    ファイルを追加しても取引が重複しない(冪等取込)。batches はファイルごとの
     パース結果(同日同額の連番はファイル内で閉じて振る必要がある)。
 
     照合キー:
@@ -40,14 +41,17 @@ def dedup(batches: list[list[Txn]]) -> list[Txn]:
     - ソース固有の一意IDを持つもの(paypay取引番号): (口座, native_id)。
     - その他: (口座, 日付, 金額, 正規化摘要, 連番)。
     連番はファイル内で古い順に振るため、取込範囲が違っても同日内の並びが
-    保たれる限り一致する。txn.id は照合キーのハッシュ(再生成しても安定)。
+    保たれる限り一致する。連番の単位は照合キーと同じ(摘要を含むなら摘要ごと)
+    にする。単位を粗くすると、保存によって出たり出なかったりする行(SBI証券の
+    スイープ行はDL時のチェック次第)が同日同額の別摘要の連番をずらし、同じ
+    取引が別IDで二重に残る。txn.id は照合キーのハッシュ(再生成しても安定)。
     """
-    # ファイルごと・(口座,日付,金額)ごとに古い順で連番を振る
     occ_of: dict[int, int] = {}
     for batch in batches:
         counters: dict[tuple, int] = defaultdict(int)
         for t in batch:
-            k = (t.account, t.date, t.amount)
+            k = ((t.account, t.date, t.amount) if t.account == "yucho"
+                 else (t.account, t.date, t.amount, t.description))
             occ_of[id(t)] = counters[k]
             counters[k] += 1
 
@@ -104,7 +108,7 @@ def load_uistate() -> dict:
 def apply_overrides(txns: list[Txn], overrides: list[dict]) -> list[str]:
     """id 突合でカテゴリ・コメントを上書きする。分類ルールより後段・最優先。
     突合できなかった上書きは警告として返す(取込データの変化で id が
-    消えた場合に静かに失われないように)。"""
+    消えた場合に気づかないうちに失われないように)。"""
     by_id = {t.id: t for t in txns}
     notes = []
     for o in overrides:
@@ -222,6 +226,47 @@ def demote_unpaired_transfers(txns: list[Txn], rules: dict) -> None:
             _classify_category(t, rules)
             t.rule = (was + " / ただし相手側と突合できず振替ではないと判定 / "
                       + t.rule)
+
+
+def settle_salary_dates(txns: list[Txn], accounts: dict) -> None:
+    """給与清算口座(group=給与)の明細を手取りの振込日へ移す。
+
+    明細CSVは支給月しか持たず月初日で取り込まれるが、対外的にお金が動くのは
+    振込日。明細1通(口座+memo)の合計(支給−控除−DC=手取り)と金額が一致
+    する、同じ月の資産口座への振替を探してその日付に揃える。見つからない
+    明細(入金が通帳の合算行に埋もれた月等)は月初日のまま。月をまたいで
+    動かさないので月次集計は変わらない。txn.id は取込時の日付から採番済み
+    なので変わらず、overrides の紐付けも保たれる。
+    対応は明細の各行と振込の両方の settle に振込の id として残す(UIの線)。
+    pair にしないのは、pair 付きの振替は相手口座の残高に反映されなくなり、
+    清算口座が0に戻らなくなるため。
+    memo が「給与明細 YYYY-MM」形式であること(給与パーサの規約)に依存する。
+    """
+    salary = {aid for aid, a in accounts.items() if a.get("group") == "給与"}
+    stmts: dict[tuple, list[Txn]] = defaultdict(list)
+    for t in txns:
+        if t.account in salary and t.memo:
+            stmts[(t.account, t.memo)].append(t)
+    used: set[str] = set()
+    for (acct, memo), rows in stmts.items():
+        m = re.search(r"\d{4}-\d{2}", memo)
+        if not m:
+            continue
+        net = sum(t.amount for t in rows)
+        hit = next((t for t in txns
+                    if t.type == "transfer" and t.counter == acct
+                    and t.amount == net and t.date[:7] == m.group()
+                    and t.id not in used
+                    and accounts.get(t.account, {}).get("kind") == "asset"),
+                   None)
+        if hit is None:
+            continue
+        used.add(hit.id)
+        hit.settle = hit.id
+        for t in rows:
+            t.date = hit.date
+            t.settle = hit.id
+    txns.sort(key=lambda t: (t.date, t.account, t.id))
 
 
 def tag_recurring(txns: list[Txn], rules: dict) -> None:
@@ -529,8 +574,8 @@ def build_transactions(rules=None) -> tuple[list[Txn], list[dict], list[str],
             meta.setdefault("account", DEFAULT_CARD_ACCOUNT)
             bills.append(meta)
         elif meta.get("pay_date"):
-            # 支払日だけあって請求額が読めない=形式変化の疑い。黙って
-            # 突合・未払残の対象外にせず報告する
+            # 支払日だけあって請求額が読めない=形式変化の疑い。警告なしに
+            # 突合・未払残の対象外にはせず、報告する
             skipped.append(f"{rel} (請求額が読み取れない)")
         elif meta.get("kind") == "portfolio":
             snapshots.append(meta)
@@ -542,7 +587,7 @@ def build_transactions(rules=None) -> tuple[list[Txn], list[dict], list[str],
             # 残高と約定明細の両方を持つ)
             manual.extend(meta.get("entries", ()))
             # ファイル横断の重複排除。native_id がなければ内容キーに
-            # ファイル内出現連番を足す(同日同銘柄同額の2約定を潰さない。
+            # ファイル内出現連番を足す(同日同銘柄同額の2約定を1件にまとめない。
             # dedup と同じ理屈で、取込範囲が違っても並びが同じなら一致する)
             occ: dict[str, int] = defaultdict(int)
             for ev in meta.get("events", ()):
@@ -563,7 +608,7 @@ def build_transactions(rules=None) -> tuple[list[Txn], list[dict], list[str],
     invest.sort(key=lambda e: (e["date"], e["name"]))
     manual.sort(key=lambda e: (e["date"], e["account"]))
     # 勤務内容等: 同一明細(stmt=支給月)由来の重複は後勝ちで1件に
-    # (同じ明細を2回置いても増殖しない。dedup と同じ冪等の考え方)。
+    # (同じ明細を2回置いても重複しない。dedup と同じ冪等の考え方)。
     # その上で同月・同種(給与/賞与)を明細順に結合する(勤怠は前月・
     # 付与項目は支給月に帰属するため、1つの月に複数明細が寄与しうる)。
     # stmt は取込内部のキーで、出力には残さない
@@ -587,20 +632,47 @@ def build_transactions(rules=None) -> tuple[list[Txn], list[dict], list[str],
 DEFAULT_CARD_ACCOUNT = "saison"
 
 
-def _bill_withdrawn(txns: list[Txn], bill: dict) -> bool:
-    """請求(支払日±3日・請求額一致)に対応する引落が明細にあるか。
+def _bill_debit(txns: list[Txn], bill: dict) -> Txn | None:
+    """請求(支払日±3日・請求額一致)に対応する引落の明細(無ければ None)。
 
     引落は支払口座側に「カード宛の振替」として現れる(counter=カード口座、
     金額は出金なので負)。
     """
     acct = bill.get("account", DEFAULT_CARD_ACCOUNT)
     pd = date.fromisoformat(bill["pay_date"])
-    return any(
-        t.type == "transfer" and t.counter == acct
+    return next((
+        t for t in txns
+        if t.type == "transfer" and t.counter == acct
         and -t.amount == bill["bill_total"]
         and abs((date.fromisoformat(t.date) - pd).days) <= 3
-        for t in txns
-    )
+    ), None)
+
+
+def _bill_withdrawn(txns: list[Txn], bill: dict) -> bool:
+    return _bill_debit(txns, bill) is not None
+
+
+def settle_card_bills(txns: list[Txn], bills: list[dict]) -> None:
+    """カード請求の利用行と引落を settle で結ぶ(UIの線。給与と同じ一対多)。
+
+    利用行は請求の取込元ファイル(=請求1通)の行で、合計が請求額と一致する
+    ときだけ結ぶ(重複排除で別ファイルに行が寄った等で合わなければ、
+    誤った対応を作るより結ばない)。引落の照合は検証と同じ _bill_debit。
+    """
+    by_src: dict[str, list[Txn]] = defaultdict(list)
+    for t in txns:
+        by_src[t.source].append(t)
+    for b in sorted(bills, key=lambda b: b["pay_date"]):
+        acct = b.get("account", DEFAULT_CARD_ACCOUNT)
+        rows = [t for t in by_src[b["source"]] if t.account == acct]
+        if not rows or -sum(t.amount for t in rows) != b["bill_total"]:
+            continue
+        debit = _bill_debit(txns, b)
+        if debit is None or debit.pair or debit.settle:
+            continue
+        debit.settle = debit.id
+        for t in rows:
+            t.settle = debit.id
 
 
 def verify_balance_continuity(txns: list[Txn],
@@ -667,7 +739,7 @@ def verify_balance_continuity(txns: list[Txn],
                         f"{acct}: 残高列と取引の積み上げが {d} で "
                         f"{close - expect:+,}円 ずれる"
                         f"(直前の整合日 {prev_day} 終値 {prev_close:,}円)")
-                expect = close   # 実残高に追従(1つのズレで以後を汚さない)
+                expect = close   # 実残高に追従(1つのズレを以後の判定に持ち越さない)
             prev_close = expect
             prev_day = d
         for d in sorted(set(known) - used):
@@ -742,9 +814,9 @@ def build_log_tail(n: int = 100, path: Path | None = None) -> list[dict]:
 def merged_periods(accounts: dict) -> list[dict]:
     """明細が合算行に圧縮され、個別の取引行が欠ける期間の宣言(accounts.toml)。
 
-    紙通帳の「通帳未記入金合計 合算 N」のように、複数の取引が1行に潰れて
+    紙通帳の「通帳未記入金合計 合算 N」のように、複数の取引が1行にまとめられて
     取り込まれる期間がある。その期間の引落は個別行として存在しないので、
-    カード請求との突合は原理的に成立しない——取り込み漏れではないのに
+    カード請求との突合は原理的に成立しない。取り込み漏れではないのに
     警告が出続け、本物の漏れを埋もれさせる。
 
     合算行が何日ぶんを畳んだかはデータに書かれておらず取引から復元できない
@@ -787,7 +859,7 @@ def verify_card_bills(txns: list[Txn], bills: list[dict],
     後者は「個別行が存在しないので突合しようがない」既知の事情。
 
     合算期間の宣言はカードの引落口座(accounts.toml の debit_account)と
-    照合する——別口座引落のカードまで巻き込んで過剰除外しないため。
+    照合する。別口座引落のカードまで巻き込んで過剰に除外しないため。
     debit_account 未宣言のカードは従来どおり期間のみで照合する。
     """
     notes: list[str] = []
@@ -842,7 +914,7 @@ def card_debt_anchors(bills: list[dict], today: date) -> list[dict]:
         時点tの未払残 = t より後で最初に到来する請求の金額
 
     とみなして各月末と当日にアンカーを置く。**確定した請求だけ**を数えるので、
-    まだ請求が立っていない直近の利用分は含まない(過小評価side)。請求書を
+    まだ請求が立っていない直近の利用分は含まない(過小評価側)。請求書を
     ダウンロードしていない月は0になるが、それは鮮度モニタが催促する領分。
     """
     if not bills:
@@ -881,7 +953,7 @@ def uncategorized_ranking(txns: list[Txn], top: int = 10) -> list[dict]:
     """未分類のまま残っている摘要を件数順に返す(ルール追加の候補出し)。
 
     枝番("支払い "接頭辞・" - "以降)を落として束ねる。分類を決めるのは
-    rules.toml の人手ルールだけなので、ここでは「どのルールを書けば一番効くか」
+    rules.toml の人手ルールだけなので、ここでは「どのルールを書けば一番多くの明細を分類できるか」
     を示すだけで、推測で分類はしない。
     """
     agg: dict[str, dict] = {}
@@ -1078,6 +1150,8 @@ def latest_balances(txns: list[Txn],
                 # 逆算するのに使う。無い口座にはキー自体を出さない
                 **({"contrib_total": e["contrib_total"]}
                    if e.get("contrib_total") is not None else {}),
+                # 資産クラス別内訳(企業型DC)。UIのリスク評価が使う
+                **({"alloc": e["alloc"]} if e.get("alloc") else {}),
             }
     has_column = set(no_extrapolate or ())
     by_acct: dict[str, list[Txn]] = defaultdict(list)
@@ -1153,7 +1227,7 @@ def balance_history(txns: list[Txn],
                     - anchored_months)
         for m in ms:
             # 実在する月末日を使う(存在しない "-31" を出すと UI の日付
-            # パースで壊れる)。文字列比較のフィルタにも同じ値で問題ない
+            # パースが失敗する)。文字列比較のフィルタにも同じ値で問題ない
             m_end = f"{m}-{calendar.monthrange(int(m[:4]), int(m[5:7]))[1]:02d}"
             if m_end < anchor_date:      # 後方: アンカーから月末まで巻き戻す
                 bal = anchor_bal - sum(t.amount for t in atx
@@ -1171,6 +1245,75 @@ def balance_history(txns: list[Txn],
                for d, b in sorted(series.items())]
         for acct, series in sorted(points.items())
     }
+
+
+# 評価額とスイープ預金の時点差の調整。評価額は約定日ベース、スイープ預金の
+# 明細は受渡日ベースなので、約定〜受渡の間の買付は両方に載る(定時定額買付は
+# 月末をまたいで受渡されるため毎月末の点で再発する)。取込の鮮度がずれると
+# 逆にどちらにも載らない期間もできる。合成口座で相殺し、消すのではなく
+# 系列として見せる。負債ではなく証券グループ内の残高にする(負債側に置くと
+# 証券の帯が月末だけ膨らみ、受渡で減ったように見える)。
+UNSETTLED_ACCOUNT = "unsettled"
+UNSETTLED_ACCOUNT_DEF = {
+    "name": "未受渡の調整", "kind": "asset", "group": "証券",
+    "active": True, "update_interval_days": 9999, "synthetic": True,
+}
+
+
+def trade_cash(e: dict) -> float:
+    """約定1件の現金の動き(買い=約定額+手数料、売り=受取額の負値)。
+    分配金再投資は新規の現金が動かないので0。"""
+    act = e.get("action") or ""
+    if "分配金再投資" in act:
+        return 0
+    if "売" in act:
+        return -(abs(e.get("amount") or 0) - (e.get("fee") or 0))
+    return (e.get("amount") or 0) + (e.get("fee") or 0)
+
+
+def unsettled_entries(events: list[dict], snapshots: list[dict],
+                      txns: list[Txn], accounts: dict) -> list[dict]:
+    """評価額とスイープ預金の時点差を相殺する残高の時系列を返す。
+
+    どの時点でも 残高 = 明細に現れた受渡の現金 − 評価額に入った約定額
+    (どちらも累積)。評価額に入る約定は直近の評価日以前のもの。明細に
+    現れた受渡は、受渡日に証券口座と同じグループの預金(スイープ先)に
+    証券口座相手の振替行(買いなら出金、売りなら入金)がある日のもの
+    (銀行からの入金(自払等)も証券口座相手の出金なのでグループで区別する)。
+    両方の取込が揃っていれば「約定済み・未受渡の買付」の負値になり、
+    評価額が古ければ未評価の買付分が正に、預金明細が古ければ未反映の
+    受渡分が負に残る。評価額の点が1つもなければ相殺しない。
+    """
+    pf = {s["account"] for s in snapshots if s.get("total_value") is not None}
+    vdates = sorted({s["date"] for s in snapshots
+                     if s.get("account") in pf
+                     and s.get("total_value") is not None})
+    if not vdates:
+        return []
+    groups = {accounts.get(a, {}).get("group") for a in pf}
+    paid = {(t.date, t.amount > 0) for t in txns
+            if t.type == "transfer" and t.counter in pf
+            and t.account not in pf
+            and accounts.get(t.account, {}).get("group") in groups}
+    deltas: dict[str, float] = defaultdict(float)
+    for e in events:
+        settle = e.get("settle")
+        cash = trade_cash(e)
+        if (e.get("kind") != "trade" or not settle or settle <= e["date"]
+                or not cash):
+            continue
+        i = bisect_left(vdates, e["date"])
+        if i < len(vdates):
+            deltas[vdates[i]] -= cash
+        if (settle, cash < 0) in paid:
+            deltas[settle] += cash
+    out, bal = [], 0.0
+    for d in sorted(deltas):
+        bal += deltas[d]
+        out.append({"date": d, "account": UNSETTLED_ACCOUNT,
+                    "balance": round(bal),
+                    "note": "約定履歴・評価日・受渡の明細から合成"})
+    return out
 
 
 def load_accounts() -> dict:
@@ -1199,7 +1342,7 @@ def accrual_entries(accounts: dict) -> list[dict]:
     各期間の start〜end の月末に monthly の累積を残高アンカーとして置く。
     期間の間の月はアンカーを置かない(純資産推移のキャリーフォワードが
     直前残高を引き継ぐ)。同日に手入力残高(balances.csv)があれば
-    そちらが勝つ。
+    そちらを優先する。
     """
     out: list[dict] = []
     for aid, a in accounts.items():
@@ -1232,6 +1375,8 @@ def txn_to_dict(t: Txn) -> dict:
         d["counter"] = t.counter
     if t.pair:
         d["pair"] = t.pair
+    if t.settle:
+        d["settle"] = t.settle
     if t.rule:
         d["rule"] = t.rule
     if t.recurring:
@@ -1271,14 +1416,6 @@ def pl_history_points(snapshots: list[dict], events: list[dict]) -> list[dict]:
     証券会社の取得原価(移動平均法)とは数千円ずれうるが、実測点区間
     (ポートフォリオCSV以降)には影響しない。
     """
-    def cost_of(e: dict) -> float:
-        act = e.get("action") or ""
-        if "分配金再投資" in act:
-            return 0
-        if "売" in act:
-            return -(abs(e.get("amount") or 0) - (e.get("fee") or 0))
-        return (e.get("amount") or 0) + (e.get("fee") or 0)
-
     evs = sorted((e for e in events if e.get("kind") != "metal"),
                  key=lambda e: e["date"])
     out = []
@@ -1286,7 +1423,7 @@ def pl_history_points(snapshots: list[dict], events: list[dict]) -> list[dict]:
     i = 0
     for s in sorted(snapshots, key=lambda s: s["date"]):
         while i < len(evs) and evs[i]["date"] <= s["date"]:
-            cost += cost_of(evs[i])
+            cost += trade_cash(evs[i])
             i += 1
         if s.get("total_pl") is not None:
             out.append({"date": s["date"], "pl": round(s["total_pl"])})
@@ -1349,6 +1486,8 @@ def write_data_js(txns: list[Txn], accounts: dict, freshness: list[dict],
                 "amortizing": a.get("amortizing", False),
                 "update_interval_days": a.get("update_interval_days", 0),
                 "howto": a.get("howto", ""),
+                # build が合成した口座(未受渡)。UIは鮮度・取得手順を出さない
+                **({"synthetic": True} if a.get("synthetic") else {}),
             } for aid, a in accounts.items()
         },
         "balances": balances,
@@ -1438,6 +1577,8 @@ def _build(args) -> int:
         emit("warn", "警告: " + n)
     if overrides:
         emit("info", f"手動上書き: {len(overrides)}件 (overrides.toml)")
+    settle_salary_dates(txns, accounts)
+    settle_card_bills(txns, bills)
     unknown = sorted({e["account"] for e in manual} - set(accounts))
     if unknown:
         emit("warn", "警告: 手入力残高に未知の口座ID: " + ", ".join(unknown))
@@ -1462,6 +1603,12 @@ def _build(args) -> int:
     if cards:
         emit("info", f"カード未払残アンカー: {len(cards)}点 "
              f"({', '.join(sorted(card_accounts))})")
+    unsettled = unsettled_entries(invest, snapshots, txns, accounts)
+    if unsettled:
+        manual = sorted(manual + unsettled,
+                        key=lambda e: (e["date"], e["account"]))
+        accounts = {**accounts, UNSETTLED_ACCOUNT: UNSETTLED_ACCOUNT_DEF}
+        emit("info", f"未受渡の調整アンカー: {len(unsettled)}点")
     uistate = load_uistate()
     warnings = freshness_warnings(txns, accounts, today, bills, uistate,
                                   anchor_dates, fetched, covers)
@@ -1498,7 +1645,7 @@ def _build(args) -> int:
         emit("warn", "警告: 中分類(category_groups)に未登録の支出カテゴリ: "
              + ", ".join(uncovered))
     # チャートの色スロットは --cat1〜9 の9個(+その他)。超えた分は
-    # UI が「その他」色に落とすため、増やしすぎたら統合を促す
+    # UI が「その他」色にするため、増やしすぎたら統合を促す
     n_slots = len([g for g in catgroups if g != "その他"])
     if n_slots > 9:
         emit("warn", f"警告: 中分類が{n_slots}個あり色スロット(9個)を超過。"
@@ -1528,7 +1675,7 @@ def _build(args) -> int:
                           for a in sorted({b["period"]["account"]
                                            for b in bill_merged}))
         emit("info", f"合算期間: 引落と突合できない請求 {len(bill_merged)}件"
-             f"(計 {total:,}円) — {names} の明細が合算行に圧縮された期間"
+             f"(計 {total:,}円)。{names} の明細が合算行に圧縮された期間"
              f"として宣言済み")
     for w in warnings:
         emit("fresh", f"鮮度警告: {w['name']}: {w['message']}")

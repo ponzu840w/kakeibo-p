@@ -201,7 +201,7 @@ class TestJsLogic(unittest.TestCase):
         self.assertNotIn("card", fe)
         self.assertEqual(fe["card_est"]["count"], 3)
         self.assertEqual(fe["card_est"]["total"], -3 * 50000)
-        # ベースラインは今日から日割りで敷かれる
+        # ベースラインは今日から日割りで計上される
         self.assertEqual(fe["baseline"]["first"], "2026-08-11")
         # 月額2万の日割り × (8/11〜11/30) ≒ 2万×(21/31 + 3ヶ月)
         self.assertAlmostEqual(fe["baseline"]["total"],
@@ -250,9 +250,10 @@ class TestJsLogic(unittest.TestCase):
         self.assertEqual(y["dcGain"], 2000)          # (53000-51000) - 0
         self.assertEqual(y["secGain"], 22500)        # 評価2万 + metal残差2,500
         self.assertEqual(y["gain"], 25300)
-        # 分母 = 月次総資産(2〜8月の7点)の平均(metal が5月から乗る)
-        self.assertEqual(y["avgAssets"], round(4595500 / 7))
-        self.assertAlmostEqual(y["annual"], 25300 / (4595500 / 7) * 2,
+        # 分母 = 月次総資産(2〜8月の7点)の平均(metal が5月から乗り、
+        # 7月末は未受渡 −3万が証券から引かれる)
+        self.assertEqual(y["avgAssets"], round(4565500 / 7))
+        self.assertAlmostEqual(y["annual"], 25300 / (4565500 / 7) * 2,
                                places=9)
         # win 省略 = 残高履歴のある全期間(2025-11〜2026-08 の9ヶ月)。
         # 評価ベースは窓の始点に実測点が無ければ pl 0 起点(投資開始前)
@@ -260,8 +261,8 @@ class TestJsLogic(unittest.TestCase):
         self.assertEqual(ya["months"], 9)
         self.assertEqual(ya["secGain"], 22500)
         self.assertEqual(ya["gain"], 25300)
-        self.assertEqual(ya["avgAssets"], round(6095500 / 10))
-        self.assertAlmostEqual(ya["annual"], 25300 / (6095500 / 10) * (12 / 9),
+        self.assertEqual(ya["avgAssets"], round(6065500 / 10))
+        self.assertAlmostEqual(ya["annual"], 25300 / (6065500 / 10) * (12 / 9),
                                places=9)
 
     def test_yield_monthly(self):
@@ -274,6 +275,7 @@ class TestJsLogic(unittest.TestCase):
         self.assertEqual(mm["2026-02"]["sec"], 0)
         self.assertEqual(mm["2026-05"]["sec"], 0)
         self.assertIsNone(mm["2026-07"]["sec"])   # アンカー無し=計上なし
+        # (未受渡の 07-30 アンカーは残差対象外。数えると7月に −3万が立つ)
         self.assertEqual(mm["2026-08"]["sec"], 22500)
         self.assertEqual(mm["2026-06"]["dc"], 0)
         self.assertEqual(mm["2026-08"]["dc"], 2000)
@@ -282,6 +284,12 @@ class TestJsLogic(unittest.TestCase):
         tot = sum((r["sec"] or 0) + (r["dc"] or 0) + r["flows"]
                   for r in self.out["yieldMonthly"])
         self.assertEqual(tot, self.out["yieldStatsAll"]["gain"])
+
+    def test_networth_unsettled(self):
+        # 未受渡は負債でなく証券グループのマイナス残高(帯が月末だけ膨らまない)
+        j = self.out["nwJul"]
+        self.assertEqual(j["liab"], 0)
+        self.assertEqual(j["sec"], 100000 + 10000 - 30000)
 
     def test_build_log_view(self):
         v = self.out["buildLogView"]     # 新しい順
@@ -298,6 +306,32 @@ class TestJsLogic(unittest.TestCase):
         self.assertEqual(v[2]["ts"], "2026-08-01 10:00:00")
         self.assertEqual(v[2]["tsLast"], "2026-08-02 10:00:00")
         self.assertEqual(v[2]["added"], [])   # 比較相手のない最古は差分なし
+
+    def test_pair_lanes(self):
+        v = self.out["pairLanes"]
+        lane = {s["key"]: (s["a"], s["b"], s["lane"]) for s in v["spans"]}
+        # 片側だけの x は線にしない
+        self.assertEqual(set(lane), {"a", "b", "c", "d", "e", "g", "h", "k"})
+        # 入れ子: 短い b が内側(0)、外側の a は1
+        self.assertEqual(lane["b"], (1, 3, 0))
+        self.assertEqual(lane["a"], (0, 4, 1))
+        # 重ならない c は内側を再利用。部分的に重なる d/e は別レーン
+        self.assertEqual(lane["c"], (5, 7, 0))
+        self.assertEqual(lane["d"], (8, 10, 0))
+        self.assertEqual(lane["e"], (9, 11, 1))
+        self.assertEqual(v["lanes"], 2)
+        sp = {s["key"]: s for s in v["spans"]}
+        # 一対多: 多側を束ねて1側へ結ぶので2レーン使う。区間は全行の先頭〜末尾
+        g = sp["g"]
+        self.assertEqual((g["members"], g["hub"], g["depth"], g["a"], g["b"]),
+                         ([12, 13], 14, 2, 12, 14))
+        # 1側が多側の間に挟まっても同じ形(多側=15,17、1側=16)
+        self.assertEqual((sp["h"]["members"], sp["h"]["hub"], sp["h"]["depth"]),
+                         ([15, 17], 16, 2))
+        # 1側+多側1行は束ねる必要がなく、ただのペアと同じ1レーン
+        self.assertEqual(sp["k"]["depth"], 1)
+        # 2レーン使う区間は、重なる区間とレーンを共有しない(d と g は離れている)
+        self.assertEqual(lane["g"][2], 0)
 
 
 if __name__ == "__main__":

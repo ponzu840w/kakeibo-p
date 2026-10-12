@@ -246,7 +246,7 @@ input[type=range].ratio-slider::-moz-range-thumb {
 #modal-prov .prov-row.neg .a { color: var(--critical); font-weight: 600; }
 #modal-prov .prov-row.link { cursor: pointer; }
 #modal-prov .prov-row.link:hover .s { color: var(--ink); }
-/* 狭幅では採用理由(.s)を省略記号で潰さず2行目に落とす */
+/* 狭幅では採用理由(.s)を省略記号で切らず2行目に送る */
 @media (max-width: 520px) {
   #modal-prov .prov-row { flex-wrap: wrap; row-gap: 0; }
   #modal-prov .s { order: 3; flex-basis: 100%; white-space: normal; }
@@ -259,6 +259,25 @@ tr.txn-detail td { background: var(--page); font-size: 12px; color: var(--ink-2)
 tr.txn-detail .item { display: block; margin: 1px 0; }
 tr.txn-detail .k { color: var(--muted); margin-right: 8px; }
 tr.focus td { background: var(--seq-track); }
+/* 対応の線(tab-ledger.js drawPairs)。列幅は常設のレーン+ホバー中のカード請求2本分。
+   中身が空の列は表が狭いと幅0まで縮むので min-width で下限を張る */
+.pair-wrap { position: relative; }
+#txn-table .pair-col { width: 60px; min-width: 60px; padding: 0; }
+#pair-lines { position: absolute; pointer-events: none; overflow: visible; }
+#pair-lines path { fill: none; stroke: var(--seq); stroke-width: 1.2; opacity: .45; }
+#pair-lines path.on { stroke-width: 2; opacity: 1; }
+#pair-lines circle { fill: var(--seq); opacity: .6; }
+#pair-lines circle.hub { fill: var(--surface); stroke: var(--seq); stroke-width: 1.5; opacity: 1; }
+#pair-lines path.settle { stroke: var(--income); }
+#pair-lines circle.settle { fill: var(--income); }
+#pair-lines circle.hub.settle { fill: var(--surface); stroke: var(--income); }
+#pair-lines path.bill { stroke: var(--expense); }
+#pair-lines circle.bill { fill: var(--expense); }
+#pair-lines circle.hub.bill { fill: var(--surface); stroke: var(--expense); }
+#txn-table td.pair-col.has-pair { cursor: pointer; }
+tr.pair-jump td { animation: pair-jump 1.6s ease-out; }
+@keyframes pair-jump { from { background: var(--seq-track); } }
+tr.pair-hl td { background: var(--seq-track); }
 
 /* タブ */
 .tabbed:not(.active) { display: none; }
@@ -297,7 +316,7 @@ details.fold[open] summary .chev { transform: rotate(180deg); }
 details.fold > .count-note { margin-bottom: 8px; }
 /* 9列グリッド(●アイコン/口座/日付4列(明細末端・取込・経過・次回目安)/
    操作3列(手順・更新確認・通知トグル)。行生成は main.js renderFreshness)。
-   各列は内容の最大幅で揃え、全体は左詰め——操作類が縦に揃いつつ右に飛ばない */
+   各列は内容の最大幅で揃え、全体は左詰めにする。操作類は縦に揃い、右端へ離れない */
 .warn-list { display: grid; grid-template-columns: repeat(9, max-content);
              justify-content: start; align-items: center;
              gap: 7px 14px; margin-top: 10px; font-size: 13px;
@@ -313,9 +332,15 @@ details.fold > .count-note { margin-bottom: 8px; }
 .warn-item .msg { color: var(--ink-2); }
 .howto-btn { color: var(--seq); cursor: pointer; font-size: 12px;
              white-space: nowrap; text-decoration: underline dotted; }
+/* button 要素の既定背景(UAのグレー)はテーマに追従せず、ダークで
+   インディゴの文字が背景に紛れて読みにくいため、枠線だけの見た目にそろえる */
+button.howto-btn { font: inherit; font-size: 12px; background: transparent;
+                   border: 1px solid var(--border); border-radius: 6px;
+                   padding: 2px 8px; }
+button.howto-btn:hover { background: var(--seq-track); }
 /* 手順の展開ボックス。日付4列(次回目安)の右端までで折り返す。
-   width:0 で列幅計算への寄与を消し、min-width で自エリア幅まで戻す
-   ——開閉で手順ボタン以降の列位置が動かないようにするため。
+   width:0 で列幅計算への寄与を消し、min-width で自エリア幅まで戻す。
+   開閉で手順ボタン以降の列位置が動かないようにするため。
    残り3列は .howto-fill(main.jsが対で挿入)が埋め、自動配置を崩さない */
 .howto-box { grid-column: 1 / 7; width: 0; min-width: calc(100% - 16px);
              box-sizing: border-box; margin: -2px 0 2px 16px;
@@ -527,6 +552,21 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
 td.num.pos { color: var(--up); }
 td.num.neg { color: var(--critical); }
 tr.transfer td, tr.adjustment td { color: var(--muted); }
+tr.transfer td.num.pos { color: color-mix(in srgb, var(--up) 55%, transparent); }
+tr.transfer td.num.neg { color: color-mix(in srgb, var(--critical) 55%, transparent); }
+/* 資産増減の詳細内訳: 純資産の行、項目の見出し行(小計)、字下げした内訳行 */
+#nw-delta-table tr.head td, #nw-delta-table tr.level td { font-weight: 600; }
+#nw-delta-table tr.head td { border-top: 1px solid var(--baseline); }
+/* 前月・当月の純資産の行は二重線で増減の行と区切る */
+#nw-delta-table tr.level:first-child td { border-bottom: 3px double var(--baseline); }
+#nw-delta-table tr.level:last-child td { border-top: 3px double var(--baseline); border-bottom: none; }
+#nw-delta-table td:first-child { white-space: nowrap; }
+#nw-delta-table tr.child td:first-child { padding-left: 24px; }
+/* 内訳の金額も見出し(小計)より左に寄せ、項目名と同じ字下げで親子を示す */
+#nw-delta-table tr.child td.num { padding-right: 32px; }
+#nw-delta-table .swatch { display: inline-block; width: 10px; height: 10px;
+  border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+#nw-delta-table tr td.note { color: var(--muted); font-weight: 400; }
 /* 定期支出テーブル: 出現が止まった終了系列は減光 */
 tr.sub-ended td { color: var(--muted); }
 /* 勤務内容等テーブル: 在籍前の対象月(所定値だけの行)は減光 */

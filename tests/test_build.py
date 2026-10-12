@@ -74,6 +74,15 @@ class TestYucho(unittest.TestCase):
         self.assertEqual(txns[0].native_id, "202606010000001")
         self.assertEqual(txns[2].amount, 24138)
 
+    def test_csv_interest_breakdown(self):
+        """受取利子の直後の残高空欄の内訳行(利子・税金)は取り込まずmemoに残す。"""
+        txns, _ = build.parse_yucho_csv(FX / "yucho_interest_sample.csv")
+        self.assertEqual([t.description for t in txns],
+                         ["自払 DF.ペイデイ", "受取利子", "料 金"])
+        interest = txns[1]
+        self.assertEqual(interest.amount, 504)
+        self.assertEqual(interest.memo, "内訳: 利子 +631 / 税金 -127")
+
     def test_parse_html(self):
         txns, _ = build.parse_yucho_html(FX / "yucho_sample.html")
         # 「通帳の現在高」行は取引ではない
@@ -94,7 +103,7 @@ class TestYucho(unittest.TestCase):
                          {"account": "yucho", "date": "2026-06-30"})
 
     def test_csv_html_dedup(self):
-        """CSVとHTML(通帳未記入分)の重複期間が増殖しない。"""
+        """CSVとHTML(通帳未記入分)の重複期間で取引が重複しない。"""
         csv_txns, _ = build.parse_yucho_csv(FX / "yucho_sample.csv")
         html_txns, _ = build.parse_yucho_html(FX / "yucho_sample.html")
         merged = build.dedup([csv_txns, html_txns])
@@ -163,7 +172,7 @@ class TestPayPay(unittest.TestCase):
 
     def test_fetched_from_filename(self):
         """既定ファイル名の範囲末尾=明細を要求した日を取込日として申告。
-        リネームされていれば黙って無し扱い。"""
+        リネームされていれば警告を出さずに取込日なしとして扱う。"""
         # dir=build.ROOT は必須: パーサは source を ROOT 相対で持つため
         # (path.relative_to(ROOT))、ROOT 外の一時ファイルは ValueError になる
         with tempfile.TemporaryDirectory(dir=build.ROOT) as td:
@@ -200,7 +209,7 @@ class TestSuica(unittest.TestCase):
         self.assertEqual(charge.date, "2026-01-04")
 
     def test_overlap_dedup(self):
-        """期間の重なる複数保存が(日付,金額,残高)キーで増殖しない。"""
+        """期間の重なる複数保存が(日付,金額,残高)キーで重複しない。"""
         a, _ = build.parse_suica_html(FX / "suica_sample.html")
         b, _ = build.parse_suica_html(FX / "suica_sample_overlap.html")
         merged = build.dedup([a, b])
@@ -282,9 +291,101 @@ class TestPaidy(unittest.TestCase):
         self.assertEqual(e["balance"], -151000)
         self.assertEqual(e["date"], "2026-07-17")
         self.assertEqual(e["note"], "残債")
-        # Apple以外の残債は行型未実装なので取込警告が立つ
+        # Apple以外の残債が拾えた購入の合計を超えるので取込警告が立つ
         self.assertEqual(len(meta["warnings"]), 1)
         self.assertIn("Apple以外", meta["warnings"][0])
+
+    def test_plan_heading_ikkatsu(self):
+        # 2026-09以降の保存ではプラン詳細の見出しが「一括払い」
+        txns, _ = build.parse_paidy_html(FX / "paidy_plan_sample.html")
+        self.assertEqual([(t.date, t.amount, t.native_id) for t in txns],
+                         [("2025-10-01", -240000, "W9999999999")])
+
+
+    def test_installment_items(self):
+        # 通常あと払いは購入一覧の行を購入日に一括計上(内容キーで冪等)。
+        # 同じ購入のプラン詳細は一覧側を正として捨てる(二重計上防止)
+        txns, meta = build.parse_paidy_html(FX / "paidy_item_sample.html")
+        self.assertEqual(
+            [(t.date, t.amount, t.description, t.native_id, t.memo)
+             for t in txns],
+            [("2026-10-09", -12000, "サンプル書店", "", "3回あと払い"),
+             ("2026-10-10", -24000, "テスト電器ネットストア", "",
+              "12回あと払い")])
+        self.assertNotIn("warnings", meta)
+        self.assertEqual(meta["entries"][0]["balance"], -36000)
+
+
+class TestSettleSalaryDates(unittest.TestCase):
+    ACCOUNTS = {"kyuyo": {"group": "給与", "kind": "asset"},
+                "bank": {"kind": "asset"}}
+
+    @staticmethod
+    def T(account, day, amount, memo="", type_="", counter=""):
+        t = build.Txn(account=account, date=day, amount=amount,
+                      description="x", raw_description="x", source="t",
+                      memo=memo, type=type_, counter=counter)
+        t.id = f"{account}{day}{amount}"
+        return t
+
+    def test_moves_statement_to_deposit_date(self):
+        T = self.T
+        txns = [T("kyuyo", "2026-07-01", 300000, "給与明細 2026-07", "income"),
+                T("kyuyo", "2026-07-01", -50000, "給与明細 2026-07", "expense"),
+                T("kyuyo", "2026-07-01", 80000, "賞与明細 2026-07", "income"),
+                T("kyuyo", "2026-08-01", 300000, "給与明細 2026-08", "income"),
+                T("bank", "2026-07-10", 80000, "", "transfer", "kyuyo"),
+                T("bank", "2026-07-24", 250000, "", "transfer", "kyuyo"),
+                # 翌月の同額振込は別の明細の振込(月をまたいで動かさない)
+                T("bank", "2026-09-25", 300000, "", "transfer", "kyuyo")]
+        build.settle_salary_dates(txns, self.ACCOUNTS)
+        got = {(t.memo, t.amount): t.date for t in txns if t.account == "kyuyo"}
+        # 給与と賞与は明細ごとに手取りが一致する振込の日付へ
+        self.assertEqual(got[("給与明細 2026-07", 300000)], "2026-07-24")
+        self.assertEqual(got[("給与明細 2026-07", -50000)], "2026-07-24")
+        self.assertEqual(got[("賞与明細 2026-07", 80000)], "2026-07-10")
+        # 同月に一致する振込が無い明細は月初日のまま
+        self.assertEqual(got[("給与明細 2026-08", 300000)], "2026-08-01")
+        # 対応は明細の行と振込の両方の settle に振込のidで残る(UIの線)。
+        # pair にはしない(残高計算で振込が清算口座に反映されなくなる)
+        dep = next(t for t in txns if t.date == "2026-07-24" and t.account == "bank")
+        rows = [t for t in txns if t.memo == "給与明細 2026-07"]
+        self.assertEqual({t.settle for t in rows + [dep]}, {dep.id})
+        self.assertEqual(dep.pair, "")
+        self.assertEqual([t.settle for t in txns if t.date == "2026-08-01"], [""])
+        # 日付順に並べ直される
+        self.assertEqual([t.date for t in txns], sorted(t.date for t in txns))
+
+
+class TestSettleCardBills(unittest.TestCase):
+    @staticmethod
+    def T(account, day, amount, source, type_="", counter=""):
+        t = build.Txn(account=account, date=day, amount=amount,
+                      description="x", raw_description="x", source=source,
+                      type=type_, counter=counter)
+        t.id = f"{account}{day}{amount}"
+        return t
+
+    def test_links_bill_rows_to_debit(self):
+        T = self.T
+        txns = [T("card", "2026-07-10", -1000, "c/07.csv"),
+                T("card", "2026-07-20", -2000, "c/07.csv"),
+                T("card", "2026-08-10", -500, "c/08.csv"),
+                T("card", "2026-08-12", -700, "c/09.csv"),
+                T("bank", "2026-09-04", -3000, "b.csv", "transfer", "card"),
+                T("bank", "2026-10-05", -500, "b.csv", "transfer", "card")]
+        bills = [{"account": "card", "pay_date": "2026-09-04",
+                  "bill_total": 3000, "source": "c/07.csv"},
+                 # 行の合計(500)と請求額が合わない請求は結ばない
+                 {"account": "card", "pay_date": "2026-10-05",
+                  "bill_total": 900, "source": "c/08.csv"},
+                 # 引落が無い請求も結ばない
+                 {"account": "card", "pay_date": "2026-11-04",
+                  "bill_total": 700, "source": "c/09.csv"}]
+        build.settle_card_bills(txns, bills)
+        debit = txns[4]
+        self.assertEqual([t.settle for t in txns],
+                         [debit.id, debit.id, "", "", debit.id, ""])
 
 
 class TestNeobank(unittest.TestCase):
@@ -416,7 +517,7 @@ class TestDemoDc(unittest.TestCase):
              "note": "DCポータル評価額・拠出累計 1,000,000円"}])
 
     def test_contrib_total_reaches_balances(self):
-        """拠出累計はアンカーに素通しされUIの損益逆算に使える。"""
+        """拠出累計はアンカーにそのまま渡され、UIの損益逆算に使える。"""
         _, meta = build.parse_demo_dc_html(FX / "demo_dc_sample.html")
         anchors = build.latest_balances([], None, meta["entries"])
         self.assertEqual(anchors["dc"]["contrib_total"], 1000000)
@@ -465,7 +566,7 @@ class TestSbi(unittest.TestCase):
 
     def test_sbi_value_history(self):
         """資産推移CSV(ヘッダなし2列)はスナップショット形の点列になり、
-        残高アンカーと invest.value_history の両方に効く(build 側で合流)。"""
+        残高アンカーと invest.value_history の両方に反映される(build 側で合流)。"""
         p = FX / "sbi_value_history_sample.csv"
         self.assertEqual(build.sniff_format(p), "sbi_value_history")
         txns, meta = build.parse_sbi_value_history(p)
@@ -518,6 +619,48 @@ class TestSbi(unittest.TestCase):
         self.assertEqual(ev[0]["deposit"], "NISA(成)")
         self.assertEqual(ev[1]["action"], "投信金額買付")
         self.assertEqual(ev[1]["amount"], 10000)
+        self.assertEqual([e["settle"] for e in ev], ["2026-01-07", "2026-01-08"])
+
+    def test_unsettled_entries(self):
+        """評価額(評価日までの約定を含む)とスイープ預金(受渡の振替行が
+        取り込まれた分だけ減る)の時点差を相殺する。鮮度が揃えば未受渡の
+        買付の負値、評価額が古ければ正、預金明細が古ければ負が残る。"""
+        accounts = {"sec": {"group": "証券"}, "sweep": {"group": "証券"},
+                    "bank": {"group": "銀行"}}
+        snaps = [{"account": "sec", "date": d, "total_value": 1}
+                 for d in ("2026-01-05", "2026-01-20")]
+
+        def trade(d, settle, amount, action="投信金額買付"):
+            return {"kind": "trade", "date": d, "settle": settle,
+                    "action": action, "amount": amount, "fee": 0}
+
+        def row(d, amount, account="sweep"):
+            return build.Txn(account=account, date=d, amount=amount,
+                             description="", raw_description="", source="",
+                             type="transfer", counter="sec")
+        ev = [
+            trade("2026-01-05", "2026-01-08", 10000),   # 評価済み→受渡
+            trade("2026-01-10", "2026-01-13", 5000),    # 受渡が評価より先
+            trade("2026-01-19", "2026-01-22", 3000),    # 受渡の明細が未取込
+            trade("2026-01-19", "2026-01-21", -2000, "株式現物売"),
+            trade("2026-01-25", "2026-01-28", 4000),    # 最終評価日より後
+            trade("2026-01-06", "2026-01-06", 100, "分配金再投資"),
+        ]
+        txns = [row("2026-01-08", -10000), row("2026-01-13", -5000),
+                row("2026-01-21", 2000), row("2026-01-28", -4000),
+                # 銀行からの入金は受渡の引落ではない(01-22 を反映済みにしない)
+                row("2026-01-22", -3000, account="bank")]
+        pts = build.unsettled_entries(ev, snaps, txns, accounts)
+        self.assertEqual([(e["date"], e["balance"]) for e in pts], [
+            ("2026-01-05", -10000),   # 評価額と預金の両方に載る
+            ("2026-01-08", 0),
+            ("2026-01-13", 5000),     # 預金から出たが評価額にまだ無い
+            ("2026-01-20", -1000),    # 5,000解消・3,000未反映・売却2,000受取待ち
+            ("2026-01-21", -3000),
+            ("2026-01-28", 1000),     # 01-25の買付は評価額に無い
+        ])
+        self.assertTrue(all(e["account"] == build.UNSETTLED_ACCOUNT for e in pts))
+        self.assertEqual(build.unsettled_entries(ev, [], txns, accounts), [])
 
     def test_metal_skips_unexecuted(self):
         _, meta = build.parse_sbi_metal(FX / "sbi_metal_sample.csv")
@@ -922,7 +1065,7 @@ class TestManualBalances(unittest.TestCase):
 
     def test_extrapolated_dates_are_real_month_ends(self):
         """フロー外挿の月末は実在日(閏2月含む)。存在しない "-31" を出すと
-        UI の日付パースで壊れる。"""
+        UI の日付パースが失敗する。"""
         def tx(date, amount):
             return build.Txn(account="x", date=date, amount=amount,
                              description="d", raw_description="d", source="t")
@@ -964,7 +1107,7 @@ class TestManualBalances(unittest.TestCase):
                           ("2025-09-30", -528000)])
 
     def test_accrual_manual_precedence(self):
-        """同日に手入力残高があれば宣言合成より手入力が勝つ(安定ソート前提)。"""
+        """同日に手入力残高があれば宣言合成より手入力を優先する(安定ソート前提)。"""
         accounts = {"loan": {"name": "架空ローン", "kind": "liability",
                              "accrual": {"start": "2024-01", "end": "2024-02",
                                          "monthly": -10000}}}
@@ -1056,7 +1199,7 @@ class TestBalanceContinuity(unittest.TestCase):
     def test_gap_is_reported_once_without_cascade(self):
         txns = [self.tx("2026-01-01", 1000, 1000),
                 self.tx("2026-01-05", -300, 480),   # 220円足りない(欠落行)
-                self.tx("2026-01-10", -100, 380)]   # 以後は実残高に追従して静か
+                self.tx("2026-01-10", -100, 380)]   # 以後は実残高に追従して警告しない
         notes = build.verify_balance_continuity(txns)
         self.assertEqual(len(notes), 1)
         self.assertIn("2026-01-05", notes[0])
@@ -1082,7 +1225,7 @@ class TestBalanceContinuity(unittest.TestCase):
                 self.tx("2026-01-05", -300, 480),   # 既知のズレ(-220)
                 self.tx("2026-01-10", -100, 380)]   # 追従後は整合
         self.assertEqual(build.verify_balance_continuity(txns, accounts), [])
-        # 宣言していない口座・日には効かない
+        # 宣言していない口座・日には適用されない
         self.assertEqual(len(build.verify_balance_continuity(txns)), 1)
 
     def test_stale_known_break_is_reported(self):
@@ -1114,7 +1257,7 @@ class TestMergedPeriods(unittest.TestCase):
             [], [self.bill("2025-09-04"), self.bill("2026-02-04", 200)],
             date(2026, 7, 1), periods)
         self.assertEqual([b["pay_date"] for b in merged], ["2025-09-04"])
-        # 期間外は警告のまま——宣言でノイズを消しても本物の漏れは潰さない
+        # 期間外は警告のまま。宣言でノイズを消しても本物の漏れは消さない
         self.assertEqual(len(notes), 1)
         self.assertIn("2026-02-04", notes[0])
 
@@ -1128,7 +1271,7 @@ class TestMergedPeriods(unittest.TestCase):
         notes, merged = build.verify_card_bills([], bills, date(2026, 7, 1),
                                                 periods, acc_same)
         self.assertEqual((len(notes), len(merged)), (0, 1))
-        # 引落口座が別(smbc)→ 宣言は効かず警告のまま
+        # 引落口座が別(smbc)→ 宣言は適用されず警告のまま
         acc_diff = {"saison": {"debit_account": "smbc"}}
         notes, merged = build.verify_card_bills([], bills, date(2026, 7, 1),
                                                 periods, acc_diff)
@@ -1198,7 +1341,7 @@ class TestServeAuth(unittest.TestCase):
         import serve
 
         class Quiet(serve.Handler):
-            def log_message(self, *args):    # テスト出力を汚さない
+            def log_message(self, *args):    # テスト出力に混ぜない
                 pass
 
         cls._tmp = tempfile.TemporaryDirectory()
@@ -1299,7 +1442,7 @@ class TestUncategorizedRanking(unittest.TestCase):
 
 class TestPipeline(unittest.TestCase):
     """分類・振替・ペアリングの機構テスト。fixtures/rules_sample.toml を使い、
-    実運用の data/rules.toml には依存しない(ルール編集でテストを壊さない・
+    実運用の data/rules.toml には依存しない(ルール編集でテストが失敗しない・
     data/ の無い環境でも走る)。"""
 
     def _classified(self, batches):
@@ -1311,10 +1454,24 @@ class TestPipeline(unittest.TestCase):
         return txns
 
     def test_idempotent_reimport(self):
-        """同じファイルを2回取り込んでも増殖しない。"""
+        """同じファイルを2回取り込んでも重複しない。"""
         a, _ = build.parse_saison(FX / "saison_sample.csv")
         b, _ = build.parse_saison(FX / "saison_sample.csv")
         self.assertEqual(len(build.dedup([a, b])), len(build.dedup([a])))
+
+    def test_partial_reimport_same_day_amount(self):
+        """同日同額で摘要の違う行の片方が欠けた保存を重ねても重複しない
+        (SBI証券のスイープ行はDL時のチェック次第で出たり出なかったりする)。"""
+        def txn(desc):
+            return build.Txn(account="sbisec", date="2026-08-25", amount=30000,
+                             description=desc, raw_description=desc,
+                             source="x")
+        full = [txn("SBIハイパー預金より自動振替入金"), txn("即時入金 ゆうちょ銀行")]
+        partial = [txn("即時入金 ゆうちょ銀行")]
+        self.assertEqual(len(build.dedup([full, partial])), 2)
+        self.assertEqual(len(build.dedup([partial, full])), 2)
+        # 同一摘要の同日同額2件はこれまで通り別取引
+        self.assertEqual(len(build.dedup([[txn("a"), txn("a")]])), 2)
 
     def test_transfer_classification_and_pairing(self):
         yucho, _ = build.parse_yucho_csv(FX / "yucho_sample.csv")
@@ -1349,7 +1506,7 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(old_salary.category, "給与")
 
     def test_pair_window_extension(self):
-        """積立引落(yucho)→定時定額入金(sbisec)の7日ズレを pair_window で救う。"""
+        """積立引落(yucho)→定時定額入金(sbisec)の7日ズレを pair_window でペアにする。"""
         a = build.Txn(account="yucho", date="2026-06-15", amount=-60000,
                       description="自払 AP(SBIシヨウケン",
                       raw_description="", source="tests")
@@ -1444,7 +1601,7 @@ class TestOverrides(unittest.TestCase):
     def test_comment_in_output_dict(self):
         t = self._txn(id="aaa", comment="手動コメント")
         self.assertEqual(build.txn_to_dict(t)["comment"], "手動コメント")
-        # コメントなしならキー自体を出さない(data.js を太らせない)
+        # コメントなしならキー自体を出さない(data.js を大きくしない)
         self.assertNotIn("comment", build.txn_to_dict(self._txn(id="bbb")))
 
 
@@ -1472,7 +1629,7 @@ class TestRecurring(unittest.TestCase):
             self._txn("2026-01-07", 990, "ネオフリックス", type="income"),
         ]
         build.tag_recurring(ts, rules)
-        # 表記揺れの両方が同じ宣言に束なる。最初の一致が勝つ
+        # 表記揺れの両方が同じ宣言に束なる。最初の一致を採る
         # (「ネオフリックス」は後段の '配信すべて' にも一致するが採らない)
         self.assertEqual(ts[0].recurring, "動画配信")
         self.assertEqual(ts[1].recurring, "動画配信")
@@ -1556,7 +1713,7 @@ class TestRecurring(unittest.TestCase):
         t = self._txn("2026-01-05", -990, "ネオフリックス",
                       id="aaa", recurring="動画配信")
         self.assertEqual(build.txn_to_dict(t)["recurring"], "動画配信")
-        # タグなしならキー自体を出さない(data.js を太らせない)
+        # タグなしならキー自体を出さない(data.js を大きくしない)
         self.assertNotIn("recurring",
                          build.txn_to_dict(self._txn("2026-01-05", -990, "x")))
 

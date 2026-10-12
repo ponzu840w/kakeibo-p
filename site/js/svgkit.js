@@ -13,7 +13,7 @@
     s.style.display = "block";
     return s;
   }
-  // 縮尺1:1のSVG。横スクロールさせるチャート用(viewBox縮小だと文字が潰れる)
+  // 縮尺1:1のSVG。横スクロールさせるチャート用(viewBox縮小だと文字が小さくなって読めない)
   function mkFixedSvg(w, h) {
     const s = document.createElementNS(SVGNS, "svg");
     s.setAttribute("viewBox", `0 0 ${w} ${h}`);
@@ -23,11 +23,11 @@
     return s;
   }
   // 月次(時系列)チャートが「データが増えるほど横に伸び、コンテナ幅で
-  // viewBox縮小されて棒も文字も潰れる」のを防ぐ土台。純資産推移と同じく、
+  // viewBox縮小されて棒も文字も縮んで読めなくなる」のを防ぐ土台。純資産推移と同じく、
   // 幅 padL の固定Y軸(axis)を左に置き、本体(plot、幅 W)だけを横スクロール
   // させて棒の縮尺は一定に保つ。plot は従来どおり左マージン padL を取った
   // 座標系(グリッド線・棒を padL 原点で描く)のまま渡してよい。左端 padL 分は
-  // 負マージンでスクローラの外へ逃がし、Y軸の右にグリッド左端をぴたりと寄せる。
+  // 負マージンでスクローラの外へ出し、Y軸の右にグリッド左端をぴたりと寄せる。
   // 呼び出し側の作法: グリッド線は plot に、Y軸の数値ラベルは axis に描き、
   // 返り値の wrap を box に入れてから done() を呼ぶ(最新月=右端へスクロール)。
   function scrollChart(W, H, padL) {
@@ -270,7 +270,7 @@
     // 透明な月バンド越しに拾った図形(積み上げエリアの帯など)は全期間に
     // 広がっているので、縁取りをヒット領域の横範囲=その月に絞り、
     // 月境には図形の断面を通る縦線を立てて輪郭を閉じる。棒は元から
-    // バンド内に収まっているので実質帯グラフだけに効く(縦線は交差せず
+    // バンド内に収まっているので実質的に帯グラフにだけ作用する(縦線は交差せず
     // 何も描かれない)
     if (el !== t && t.tagName === "rect" && !el._hlPath) {
       const clip = document.createElementNS(SVGNS, "clipPath");
@@ -308,7 +308,7 @@
 
   // 図の一部を「奥に引く」ための減光フィルタ(RGBをk倍する)。同じ文法で
   // 描いた面を色を変えずに暗くできるので、実績と予測のように意味だけが
-  // 違うものを区別するのに使う(明るい側=主役)。パターン塗りにも効く
+  // 違うものを区別するのに使う(明るい側=主役)。パターン塗りにも適用できる
   function dimFilter(svg, k) {
     const f = document.createElementNS(SVGNS, "filter");
     f.setAttribute("id", "dim-" + (++_svgSeq));
@@ -321,8 +321,32 @@
     svgDefs(svg).appendChild(f);
     return `url(#${f.getAttribute("id")})`;
   }
+  // 密着して並べるセグメント。端をちょうど接させると、小数座標の
+  // アンチエイリアスで継ぎ目に背景が細い線状に透ける。そこで次の
+  // セグメントの側(dir: "right" / "up" / "down")へ1px延ばした同色の
+  // 下敷きを先に描き、延びた分は後に描く隣に覆わせる。列の末端の
+  // はみ出しはクリップ(stackGroup 等)が切る前提で、クリップの無い末端は
+  // dir を省く。
+  // 縦積みは棒の左右(out に含む側)にも下敷きをはみ出させ、棒の輪郭を
+  // stackGroup の切り抜きだけで決める。輪郭を矩形の縁に任せると、縁の
+  // 半透明画素に重なる枚数(下敷き・本体・下の段の延長)が段ごとに違い、
+  // 細い段ほど縁が濃く=太く見える。横並び(資産構成バー等)は上下の縁が
+  // 整数pxなのではみ出させない。返すのは本来の寸法の矩形(ホバーの
+  // 縁取りはこれをなぞる)
+  function segRect(parent, x, y, w, h, fill, dir, out = "lr") {
+    let ux = x, uy = y, uw = w, uh = h;
+    if (dir === "right") uw += 1;
+    else {
+      if (out.includes("l")) { ux -= 1; uw += 1; }
+      if (out.includes("r")) uw += 1;
+      if (dir === "up") { uy -= 1; uh += 1; }
+      if (dir === "down") uh += 1;
+    }
+    rect(parent, ux, uy, uw, uh, fill).style.pointerEvents = "none";
+    return rect(parent, x, y, w, h, fill);
+  }
   // 積み上げ棒用: 上角丸の棒型に切り抜いた<g>を返す。中にセグメントを
-  // 素のrectで密着して描けば、資産構成バーと同じ「角丸・境界線なし」になる
+  // segRect で密着して描けば、資産構成バーと同じ「角丸・境界線なし」になる
   function stackGroup(svg, x, yBottom, w, h, down) {
     if (h <= 0) return null;
     const clip = document.createElementNS(SVGNS, "clipPath");
@@ -543,7 +567,7 @@
 
   // カレンダーヒートマップ(GitHub の草風)。週=列・曜日=行。
   //   dayMap : Map(YYYY-MM-DD → 値)。値の大きさをセルの濃さにする
-  //   opts   : { color, max(満濃度の値。外れ値で潰れないよう分位点を渡す),
+  //   opts   : { color, max(満濃度の値。外れ値で他のセルが薄くなりすぎないよう分位点を渡す),
   //              start, end(省略時は dayMap の範囲), tipRows(date,val)→rows,
   //              weekdayAvg(true で右に曜日別平均の小横棒) }
   function drawHeatmapCal(box, dayMap, opts) {
@@ -564,8 +588,8 @@
     const padL = 30, padT = 18;
     const gridW = weeks * step;
     const H = padT + 7 * step + 6;
-    // 期間が長いと週数が膨れてセルが潰れるため、縮小せず横スクロールに
-    // する(月次チャートと同じ作法。右端=最新週へ寄せる)
+    // 期間が長いと週数が増えてセルが小さくなりすぎるため、縮小せず横スクロールに
+    // する(月次チャートと同じ作法。右端の最新週までスクロールしておく)
     const sc = scrollChart(padL + gridW, H, padL);
     const svg = sc.plot;
     // 曜日ラベル(全曜日)は左の固定軸に
@@ -709,8 +733,8 @@
           if (w.hl) hlDs.push(p.getAttribute("d"));
         }
         // 面積が十分な扇形には構成比を書き込む(リング帯が文字高より細い
-        // 小径ドーナツでは省く。はみ出た白文字は背景に溶けて読めない)。
-        // 白文字が扇形の外に出ると背景に溶けるため、円弧に沿う向きで
+        // 小径ドーナツでは省く。はみ出た白文字は背景に紛れて読めない)。
+        // 白文字が扇形の外に出ると背景に紛れるため、円弧に沿う向きで
         // リング帯の中に収める。
         // 左右の位置では縦書きになってしまうので、扇形の範囲内で
         // 12時/6時に最も近い角度を選び、なるべく水平に近い向きにする
@@ -874,7 +898,8 @@
 
   Object.assign(KB, {
     SVGNS, mkSvg, mkFixedSvg, scrollChart, line, rect, text, monthTickPadB, monthTick,
-    vbar, svgDefs, stripePattern, stripeCss, dimFilter, stackGroup, hbarPath, polyline,
+    vbar, svgDefs, stripePattern, stripeCss, dimFilter, segRect, stackGroup, hbarPath,
+    polyline,
     circle, areaBand, drawHeatmapCal, drawSankey, ttDonut, nextSvgSeq,
     hlMark, hlClear,
     estTextW, yAxis, legendKey, monthlyChart, nowBand,

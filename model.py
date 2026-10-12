@@ -84,6 +84,8 @@ class Txn:
     category: str = ""
     counter: str = ""         # 振替の相手口座id
     pair: str = ""            # 相手側明細とマッチングできた振替のペアid
+    settle: str = ""          # 決済の対応(給与明細の行↔手取り振込、
+                              # カード利用行↔引落)。値は振込・引落のid
     rule: str = ""            # 分類根拠(適用ルールの説明。UIで表示する)
     recurring: str = ""       # 一致した [[recurring]] 宣言(サブスク)の name
     id: str = ""              # 重複排除キーのハッシュ

@@ -6,7 +6,7 @@
     $, TXNS, curMonth, shiftMonth, state,
     fmt, cYen, compact, truncate, cssVar, monthLabel, niceStep,
     showTip, hideTip, mkTile, note,
-    scrollChart, text, rect, vbar, stackGroup, polyline, circle,
+    scrollChart, text, rect, vbar, stackGroup, segRect, polyline, circle,
     yAxis, legendKey, monthlyChart, nowBand,
   } = KB;
 
@@ -66,7 +66,7 @@
     const names = [...slots, "その他支給"];
     const colors = [2, 3, 5, 7, 8].map((i) => cssVar("--cat" + i))
       .concat([cssVar("--cat-other")]);
-    // 時間外勤務手当はグレー系スロットに落ちると「その他支給」と見分けが
+    // 時間外勤務手当はグレー系スロットになると「その他支給」と見分けが
     // つかないため、警告的な意味も込めて真っ赤で固定する
     const colorOf = (n) => n === "時間外勤務手当"
       ? cssVar("--critical") : colors[names.indexOf(n)];
@@ -155,21 +155,23 @@
           for (const n of pal.names) {
             const v = vals.get(n) || 0;
             if (v <= 0) continue;
-            rect(bar, bx, y(cum + v), payW, Math.max(1, y(cum) - y(cum + v)),
-                 pal.colorOf(n));
+            segRect(bar, bx, y(cum + v), payW,
+                    Math.max(1, y(cum) - y(cum + v)), pal.colorOf(n), "up",
+                    showDed ? "l" : "lr");
             cum += v;
           }
           // 右レーン: 控除を総支給の高さから吊り下げ。
           // 下端(=手取りの水位)から下は空けておく
           if (showDed) {
+            // 末尾の下は手取りの空きでクリップが無いので下へは延ばさない
             let yCur = y(g.gross);
-            for (const n of DED_NAMES) {
-              const v = g.ded.get(n) || 0;
-              if (v <= 0) continue;
-              const hgt = Math.max(1, y(0) - y(v));
-              rect(bar, bx + hw, yCur, hw, hgt, dedColors[n]);
+            const dns = DED_NAMES.filter((n) => (g.ded.get(n) || 0) > 0);
+            dns.forEach((n, di) => {
+              const hgt = Math.max(1, y(0) - y(g.ded.get(n)));
+              segRect(bar, bx + hw, yCur, hw, hgt, dedColors[n],
+                      di < dns.length - 1 ? "down" : null, "r");
               yCur += hgt;
-            }
+            });
           }
         } else if (bar) {
           // 控除のみ: 0から全幅で積み上げ(控除スケールで拡大表示)
@@ -177,8 +179,8 @@
           for (const n of DED_NAMES) {
             const v = g.ded.get(n) || 0;
             if (v <= 0) continue;
-            rect(bar, bx, y(cum + v), entityW,
-                 Math.max(1, y(cum) - y(cum + v)), dedColors[n]);
+            segRect(bar, bx, y(cum + v), entityW,
+                    Math.max(1, y(cum) - y(cum + v)), dedColors[n], "up");
             cum += v;
           }
         }
@@ -359,7 +361,7 @@
       attachRateTip(c, g);
       // 率は点の左下に右詰めで置く(上だと点線側と混み合う)。賞与は別系列
       // なので同月の給与ラベルと高さが揃うことがあり、真下・中央揃えだと
-      // 全控除後ラベル(点の真下)と重なって潰れる。右端を点のxに寄せれば
+      // 全控除後ラベル(点の真下)と重なって読めない。右端を点のxに寄せれば
       // 給与ラベルのx範囲と交わらない
       text(svg, x(g.month) + dx - 2, y(rate(g)) + 15,
            Math.round(rate(g)) + "%", "bar-label-sm", "end");
@@ -486,7 +488,6 @@
     }
     // 休暇取得の推移(年次休暇+半日休暇0.5日換算)。時間外と同じ足場。
     // 「付与」を含む項目(有給付与日数等)は取得実績ではないので入れない
-    // のため使わない
     const vbox = $("#vac-chart");
     vbox.replaceChildren();
     const vac = rows.map((w) => {

@@ -138,7 +138,7 @@
   //   account … 最新出現の口座(最頻でなく。支払手段を切り替えた直後に投影が
   //             旧口座へ残る事故を防ぐ)
   //   active  … 現役判定。monthly: 直近2ヶ月に出現 / yearly: 直近13ヶ月に出現。
-  //             解約は宣言に書かず、出現が止まれば自然に非現役へ落ちる
+  //             解約は宣言に書かず、出現が止まれば自然に非現役になる
   // 概要タイル・定期支出テーブル・What-if・資金繰り予測は必ずこの1関数を
   // 母集団にする(母集団が分かれると画面ごとに値がズレる)。
   // 入力(TXNS・DATA.recurring)はリロードまで不変なので初回結果をメモ化
@@ -156,7 +156,7 @@
     for (const decl of DATA.recurring || []) {
       const list = (byName.get(decl.name) || [])
         .slice().sort((a, b) => a.date.localeCompare(b.date));
-      if (!list.length) continue;   // 死に宣言は build --check が警告する
+      if (!list.length) continue;   // 明細に現れない宣言は build --check が警告する
       const series = new Map();
       for (const t of list) {
         const m = t.date.slice(0, 7);
@@ -235,7 +235,7 @@
   // カード引落(確定請求で投影)・銀行間の移動・給与は対象外。
   // 金額は宣言サブスクと同じく直近3出現月の中央値(積立額の変更に自動追従)。
   // 日付が不安定なチャージ(残高が減ったら補充する残高駆動)は意図して
-  // 拾わない——日を打てないものはベースラインの日割りに残る。
+  // 拾わない。日を打てないものはベースラインの日割りに残る。
   let rtCache = null;
   function detectRecurringTransfers() {
     if (rtCache) return rtCache;
@@ -286,7 +286,7 @@
   // 給与・確定請求・宣言サブスク・定期振替だけの投影では、日々の非定期
   // 支出・PayPay等のチャージが丸ごと抜ける(実測で銀行流出の4割超が
   // 投影外だった)。それら「他の投影で説明されない銀行からの流出」の
-  // 直近3完了月の月次中央値を測り、日割りで敷くための入力を返す。
+  // 直近3完了月の月次中央値を測り、日割りで計上するための入力を返す。
   // 日割りは「毎日使う」という主張ではなく、日を打てない流出の期待値を
   // 期間に均す近似(日を打てるものは detectRecurringTransfers が先に
   // 個別イベントへ昇格させ、ここからは除外される)。
@@ -336,15 +336,15 @@
   // 概算で、凡例・表・注記で推定であることを明示する):
   //   1. サブスク宣言(declaredSubs、現役のみ)・検出ベースの定期収入・
   //      定期振替(detectRecurringTransfers。証券積立の自動引落等)の
-  //      うち asset 口座のもの。カード上のサブスクは請求経由で銀行に
-  //      落ちるため直接は投影しない(二重計上の防止)。
+  //      うち asset 口座のもの。カード上のサブスクは請求を経て銀行から
+  //      引き落とされるため直接は投影しない(二重計上の防止)。
   //   2. 給与: estimateSalary の振込日・金額。賞与は投影しない。
   //   3. 確定カード請求(card_bills)の未来分。引落元は cardDebitAccounts。
   //   4. 未確定のカード請求(card_est): 請求が確定していない未来月を
   //      0円扱いにすると予測が階段状に上がるだけの楽観になるため、
   //      直近請求の中央値で見込む。確定請求がある月はそちらが正。
   //   5. その他流出ベースライン(baseline): baselineOutflow の月次中央値を
-  //      日割りで敷く。
+  //      日割りで計上する。
   // opts.whatif(任意): { drop:Set<定期支出name> } で What-if を反映する。
   function futureEvents(opts) {
     const { TXNS, ACCOUNTS, shiftMonth, daysOf, curMonth } = KB;
@@ -367,8 +367,8 @@
       }
     };
 
-    // 1a. サブスク宣言(asset口座のみ・現役)。カード上のサブスクは請求経由で
-    //     銀行に落ちるため直接は投影しない(二重計上の防止)
+    // 1a. サブスク宣言(asset口座のみ・現役)。カード上のサブスクは請求を経て
+    //     銀行から引き落とされるため直接は投影しない(二重計上の防止)
     for (const s of declaredSubs()) {
       if (!s.active || drop.has(s.name)) continue;   // 非現役 / What-if 解約
       if ((ACCOUNTS[s.account] || {}).kind !== "asset") continue;

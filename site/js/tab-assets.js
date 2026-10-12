@@ -3,15 +3,16 @@
 (function () {
   const KB = window.KB;
   const {
-    $, TXNS, ACCOUNTS, BALS, COMP, months, state,
+    $, TXNS, ACCOUNTS, BALS, COMP, HIST, months, state,
     groupColor, glabel, nwLiabRank, nwTip, nwStackSort, shade, liabShade,
     fmt, sfmt, compact, truncate, cssVar,
     showTip, hideTip, saveGlobals, staleness, mkTile, note, niceStep,
     mkSvg, mkFixedSvg, scrollChart, SVGNS, rect, text, line, polyline, stackGroup,
+    segRect,
     svgDefs, stripePattern, stripeCss, monthTick, monthTickPadB, nextSvgSeq,
     circle, vbar, areaBand, xirr, yAxis, legendKey, ttDonut,
     hbarPath, monthlyChart, nowBand,
-    isSell, isReinvest, buyCost, sellProceeds,
+    isSell, isReinvest, buyCost, sellProceeds, effective,
   } = KB;
   // 資産構成・純資産推移の凡例スウォッチ(.legend でなく .comp-legend 配下
   // なのでサイズをインラインで持つ)
@@ -38,8 +39,10 @@
       if (!a) continue;
       const item = { id, name: a.name, v: Math.abs(b.balance),
                      date: b.date, note: b.note || "" };
-      if (a.kind === "liability") {
-        if (b.balance < 0) liabs.push(item);
+      // マイナス残高の資産(未受渡の買付等)は資産の帯に置けないので
+      // 負債と同じ下段に並べる
+      if (a.kind === "liability" || b.balance < 0) {
+        if (b.balance < 0) liabs.push({ ...item, offset: a.kind !== "liability" });
       } else if (b.balance > 0) {
         const g = a.group || "その他";
         if (!groups.has(g)) groups.set(g, { total: 0, accounts: [] });
@@ -49,6 +52,7 @@
     }
     const glist = nwStackSort([...groups.keys()])
       .map((g) => [g, groups.get(g)]);
+    const assetTotal = glist.reduce((s, [, g]) => s + g.total, 0);
     // ポートフォリオ(含み益の出所)を持つ口座。証券グループでは右端に置き、
     // グループ帯・口座帯のストライプが同じ右端に揃うようにする
     const pf = (DATA.invest || {}).portfolio;
@@ -77,14 +81,14 @@
     }));
 
     // 実測幅で原寸(1:1)描画する。固定幅+viewBox縮小だと狭い画面で
-    // 文字が潰れるため、文字サイズは維持し、狭い画面ではレーンを太くして
+    // 文字が小さくなって読めないため、文字サイズは維持し、狭い画面ではレーンを太くして
     // 見やすさとタップのしやすさを補う。幅はタブ表示切替・リサイズで
     // 変わるので ResizeObserver で描き直す(非表示中は幅0なので触らない)
     const availW = box.clientWidth;
     const W = Math.max(300, Math.min(920, availW || 920));
     const laneH = W < 480 ? 26 : 19, gap = 7;
     const H = 2 * laneH + (liabTotal > 0 ? gap + laneH : 0) + 2;
-    const scale = (W - 2) / Math.max(c.assets, liabTotal, 1);
+    const scale = (W - 2) / Math.max(assetTotal, liabTotal, 1);
     const svg = mkSvg(W, H);
     if (!box._compRO) {
       box._compRO = new ResizeObserver(() => {
@@ -101,7 +105,7 @@
     const stripeFill = stripePattern(svg);
     const defs = svgDefs(svg);
     // 枠の角丸に合わせて中身を切り抜く(セグメント自体は角丸にしない)
-    const assetW = Math.max(1, c.assets * scale);
+    const assetW = Math.max(1, assetTotal * scale);
     const clip = document.createElementNS(SVGNS, "clipPath");
     clip.setAttribute("id", "comp-clip-" + seq);
     const cr = rect(clip, 1, 1, assetW, 2 * laneH, "none");
@@ -145,7 +149,7 @@
       const gw = g.total * scale;
       const color = groupColor(gname);
       // 下段: グループ
-      const r = rect(grp, x, 1 + laneH, gw, laneH, color);
+      const r = segRect(grp, x, 1 + laneH, gw, laneH, color, "right");
       const isSec = gname === "証券" && unrealized > 0;
       if (isSec) {
         const sw = Math.min(gw, unrealized * scale);
@@ -153,7 +157,7 @@
         s.style.pointerEvents = "none";
       }
       r.addEventListener("pointermove", (evt) => {
-        const pctA = (v) => (v / c.assets * 100).toFixed(1) + "%";
+        const pctA = (v) => (v / assetTotal * 100).toFixed(1) + "%";
         const rows = [
           { name: "残高", value: fmt(g.total), color, pct: pctA(g.total) },
         ];
@@ -166,7 +170,7 @@
       });
       r.addEventListener("pointerleave", hideTip);
       r._hlLabel = segLabel(x, gw, 1 + laneH + laneH / 2, glabel(gname),
-                            g.total, g.total / c.assets);
+                            g.total, g.total / assetTotal);
       r._hlPath = rp(x, 1 + laneH, gw, laneH,
                      [0, 0, x + gw >= 1 + assetW - 0.5 ? 4 : 0,
                       x <= 1.01 ? 4 : 0]);
@@ -174,7 +178,8 @@
       let ax = x;
       g.accounts.forEach((a) => {
         const aw = a.v * scale;
-        const ar = rect(grp, ax, 1, aw, laneH, shade(color, a.shade));
+        const ar = segRect(grp, ax, 1, aw, laneH, shade(color, a.shade),
+                           "right");
         // ポートフォリオ口座(SBI証券)には口座帯にも含み益の斜線を重ねる
         // (真下のグループ帯の斜線と右端が揃う)
         if (pf && a.id === pf.account && unrealized > 0) {
@@ -185,7 +190,7 @@
         ar.addEventListener("pointermove", (evt) => {
           const rows = [
             { name: "残高", value: fmt(a.v), color,
-              pct: (a.v / c.assets * 100).toFixed(1) + "%" },
+              pct: (a.v / assetTotal * 100).toFixed(1) + "%" },
             { name: `${glabel(gname)}内の割合`,
               value: (a.v / g.total * 100).toFixed(1) + "%" },
             { name: "時点", pct: "",
@@ -200,7 +205,7 @@
         });
         ar.addEventListener("pointerleave", hideTip);
         ar._hlLabel = segLabel(ax, aw, 1 + laneH / 2, a.name, a.v,
-                               a.v / c.assets);
+                               a.v / assetTotal);
         ar._hlPath = rp(ax, 1, aw, laneH,
                         [ax <= 1.01 ? 4 : 0,
                          ax + aw >= 1 + assetW - 0.5 ? 4 : 0, 0, 0]);
@@ -229,7 +234,8 @@
       let lx = 1;
       liabs.forEach((l, li) => {
         const lwseg = l.v * scale;
-        const lr = rect(lg, lx, ly, lwseg, laneH, liabShade(li));
+        const lr = segRect(lg, lx, ly, lwseg, laneH, liabShade(li),
+                           "right");
         lr.addEventListener("pointermove", (evt) => {
           // 負債レーンも口座レーンと同じ文法: 負債内の割合ドーナツ+強調
           const wedges = liabs.map((l2, li2) => ({
@@ -237,7 +243,8 @@
             hl: l2.id === l.id,
           }));
           showTip(evt, l.name, [
-            { name: "負債", value: "−" + fmt(l.v), color: lcolor, cls: "neg",
+            { name: l.offset ? "控除" : "負債", value: "−" + fmt(l.v),
+              color: lcolor, cls: "neg",
               pct: (l.v / liabTotal * 100).toFixed(1) + "%" },
             { name: "時点", pct: "",
               value: l.date + (l.note ? `(${l.note})` : "") },
@@ -262,7 +269,7 @@
     glist.forEach(([name, g]) => {
       legendKey(legend, SW + "background:" + groupColor(name), glabel(name),
                 { value: fmt(g.total),
-                  pct: (g.total / c.assets * 100).toFixed(0) + "%" });
+                  pct: (g.total / assetTotal * 100).toFixed(0) + "%" });
       if (name === "証券" && unrealized > 0) {
         // 含み益は証券の内数なので直後に置く(ストライプの地色も証券色)
         legendKey(legend, SW + stripeCss(groupColor("証券")), "うち含み益",
@@ -346,6 +353,214 @@
     drawNetWorth($("#sum-networth"), 240);
     const as = $("#as-networth");
     drawNetWorth(as, as._nwH || 360);
+  }
+
+  // 変化の内訳カード(純資産推移の月クリック)。
+  // 前月の点 → グループ別の増減 → 負債別の増減 → 当月の点 の橋渡し(棒)と、
+  // 証券・年金の分解表。証券は 含み損益の変化 / 買付−売却(約定ベース) /
+  // 説明できない残差 に割る。残差は隠さず出す(評価額アンカーと約定・受渡の
+  // 時点ずれ、鮮度差がそこに現れる)。年金は拠出累計があれば 拠出 / 運用益。
+  function renderNwDelta(i) {
+    const NW = KB.NW;
+    const p = NW[i], prev = NW[i - 1];
+    if (!p || !prev) return;
+    const card = $("#nw-delta-card");
+    card.hidden = false;
+    const cur = p.month === KB.curMonth ? `${p.month}(当月途中)` : p.month;
+    const dTotal = p.total - prev.total;
+    $("#nw-delta-title").textContent =
+      `${prev.month} → ${cur} の資産増減内訳: ${sfmt(dTotal)}`;
+    // 橋渡しの項目。増減0のグループは省く
+    const items = [{ name: prev.month, v: prev.total, level: true, color: cssVar("--ink") }];
+    const gkeys = nwStackSort([...new Set([...prev.groups.keys(), ...p.groups.keys()])]);
+    for (const g of gkeys) {
+      const d = (p.groups.get(g) || 0) - (prev.groups.get(g) || 0);
+      if (d) items.push({ name: glabel(g), g, d, color: groupColor(g),
+                          from: prev.groups.get(g) || 0, to: p.groups.get(g) || 0 });
+    }
+    const liabRank = nwLiabRank(NW);
+    const lnames = [...new Set([...prev.liabs.keys(), ...p.liabs.keys()])]
+      .sort((a, b) => liabRank.get(a) - liabRank.get(b));
+    for (const nm of lnames) {
+      const d = -((p.liabs.get(nm) || 0) - (prev.liabs.get(nm) || 0));
+      if (d) items.push({ name: nm, liab: true, d, color: liabShade(liabRank.get(nm)),
+                          from: -(prev.liabs.get(nm) || 0), to: -(p.liabs.get(nm) || 0) });
+    }
+    items.push({ name: p.month, v: p.total, level: true, color: cssVar("--ink") });
+    drawBridge($("#nw-delta-chart"), items);
+
+    // 詳細内訳の表。橋渡し棒と同じ項目を同じ順に並べ、前月の純資産から
+    // 足していくと当月の純資産になる形にする。年金・証券は増減を
+    // 口座別でなく原因別に割る(証券なら
+    // 預金→投信のような内部の移動は打ち消し合うので出さない)。
+    // 残差は隠さず出す(取込時点の差・貴金属の値動き等がここに現れる)
+    const end = p.month + "-99", pend = prev.month + "-99";
+    const lastPt = (acct, e) => {
+      let last = null;
+      for (const q of (HIST[acct] || [])) { if (q.date <= e) last = q; else break; }
+      return last;
+    };
+    const gDelta = (g) => (p.groups.get(g) || 0) - (prev.groups.get(g) || 0);
+    const rows = [];
+    const sections = {};
+    sections["証券"] = () => {
+      const dSec = gDelta("証券");
+      const secIds = new Set(Object.keys(ACCOUNTS).filter((id) =>
+        ACCOUNTS[id].kind === "asset" && ACCOUNTS[id].group === "証券"));
+      if (!dSec || !secIds.size) return;
+      // 証券グループの外との振替=入金・出金。グループ内の口座に振替の記録が
+      // あればそれを使い、無い口座だけ外側(銀行側)の記録で補う(二重計上防止)
+      const ownTransfer = new Set();
+      for (const t of TXNS) if (t.type === "transfer") ownTransfer.add(t.account);
+      let inflow = 0, income = 0;
+      for (const t of TXNS) {
+        if (t.date.slice(0, 7) !== p.month) continue;
+        const e = effective(t);
+        if (e.type === "transfer" && t.counter) {
+          if (secIds.has(t.account) && !secIds.has(t.counter)) inflow += t.amount;
+          else if (!secIds.has(t.account) && secIds.has(t.counter)
+                   && !ownTransfer.has(t.counter)) inflow -= t.amount;
+        } else if (secIds.has(t.account)
+                   && (e.type === "income" || e.type === "expense")) {
+          income += e.amount;
+        }
+      }
+      const dPl = (p.pl || 0) - (prev.pl || 0);
+      const pf = (DATA.invest || {}).portfolio;
+      const va = pf && lastPt(pf.account, pend), vb = pf && lastPt(pf.account, end);
+      rows.push({ name: "入金 − 出金", value: inflow,
+                  note: "銀行などとの間の振替" });
+      rows.push({ name: "含み損益の変化", value: dPl,
+                  note: "評価日 " + (va ? va.date : "—") + " → " + (vb ? vb.date : "—") });
+      if (income) rows.push({ name: "配当・利息など", value: income });
+      const resid = dSec - inflow - dPl - income;
+      rows.push({ name: "残差", value: resid, neutral: true,
+                  note: resid ? "評価額と預金の取込時点の差、貴金属の値動き等" : "" });
+    };
+    sections["年金"] = () => {
+      const dPen = gDelta("年金");
+      if (!dPen) return;
+      for (const [id, a] of Object.entries(ACCOUNTS)) {
+        if (a.kind !== "asset" || a.group !== "年金") continue;
+        const pa = lastPt(id, pend), pb = lastPt(id, end);
+        const d = (pb ? pb.balance : 0) - (pa ? pa.balance : 0);
+        if (!d) continue;
+        const span = "残高の時点 " + (pa ? pa.date : "—") + " → " + (pb ? pb.date : "—");
+        if (!pa) {
+          rows.push({ name: "記録開始", value: d, neutral: true,
+                      note: `${a.name}: 前月末の記録がない(それまでの累計を含む)` });
+        } else if (pb && pa.contrib_total != null && pb.contrib_total != null) {
+          const dc = pb.contrib_total - pa.contrib_total;
+          rows.push({ name: "拠出", value: dc, note: span });
+          rows.push({ name: "運用益", value: d - dc });
+        } else {
+          rows.push({ name: a.name, value: d, note: span });
+        }
+      }
+    };
+    for (const it of items) {
+      if (it.level) {
+        const label = it.name === KB.curMonth ? `${it.name} の純資産(当月途中)`
+          : `${it.name} 末の純資産`;
+        rows.push({ level: true, name: label, value: it.v, color: it.color });
+        continue;
+      }
+      // 負債の増減は返済か新たな利用・借入かを書き添える(カードの+は
+      // お金が増えたのでなく、前月の請求を払って未払が減ったという意味)
+      const name = it.liab ? `${it.name}(${it.d > 0 ? "返済" : "利用・借入"})` : it.name;
+      const note = it.liab
+        ? `未払残 ${fmt(-it.from)} → ${fmt(-it.to)}`
+        : `残高 ${fmt(it.from)} → ${fmt(it.to)}`;
+      rows.push({ head: true, name, value: it.d, color: it.color, note });
+      if (it.g && sections[it.g]) sections[it.g]();
+    }
+    const tbl = $("#nw-delta-table");
+    tbl.replaceChildren();
+    $("#nw-delta-sub").hidden = !rows.length;
+    if (rows.length) {
+      const table = document.createElement("table");
+      const tb = document.createElement("tbody");
+      for (const r of rows) {
+        const tr = document.createElement("tr");
+        tr.className = r.level ? "level" : r.head ? "head" : "child";
+        const td1 = document.createElement("td");
+        if (r.color) {
+          // 橋渡し棒の同じ項目の棒と色で対応づける
+          const sw = document.createElement("span");
+          sw.className = "swatch";
+          sw.style.cssText += "background:" + r.color;
+          td1.appendChild(sw);
+        }
+        td1.append(r.name);
+        const td2 = document.createElement("td");
+        td2.className = "num" + (r.level || r.neutral || !r.value ? ""
+          : r.value < 0 ? " neg" : " pos");
+        td2.textContent = r.level ? fmt(r.value) : r.value ? sfmt(r.value) : "¥0";
+        const td3 = document.createElement("td");
+        td3.className = "note";
+        td3.textContent = r.note || "";
+        tr.append(td1, td2, td3);
+        tb.appendChild(tr);
+      }
+      table.appendChild(tb);
+      tbl.appendChild(table);
+    }
+    $("#nw-delta-note").textContent =
+      "各点は「その月末までに判明している最新の残高」。口座ごとに取込の" +
+      "時点が違うため、その差は残差に入る。";
+    card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
+  // 橋渡し棒(ウォーターフォール)。level の項目は0からの棒、それ以外は
+  // 直前の水準からの増減を浮かせて描く。棒は vbar(角丸)、値は棒の外側に書く
+  function drawBridge(box, items) {
+    box.replaceChildren();
+    const n = items.length;
+    const padL = 64, padR = 16, padT = 22, padB = 34;
+    const availW = box.clientWidth || 700;
+    const slot = Math.max(56, Math.min(96, (availW - padL - padR) / n));
+    const W = padL + slot * n + padR, H = 240;
+    const bw = Math.min(48, slot - 14);
+    let level = 0;
+    const spans = items.map((it) => {
+      const from = it.level ? 0 : level;
+      const to = it.level ? it.v : level + it.d;
+      level = to;
+      return { ...it, from, to };
+    });
+    const vals = spans.flatMap((s2) => [s2.from, s2.to]).concat(0);
+    const maxV = Math.max(...vals), minV = Math.min(...vals);
+    const step = niceStep(maxV - minV || 1);
+    const top = Math.ceil(maxV / step) * step, bot = Math.floor(minV / step) * step;
+    const plotH = H - padT - padB;
+    const y = (v) => padT + plotH * (1 - (v - bot) / Math.max(1, top - bot));
+    const svg = mkFixedSvg(W, H);
+    yAxis(svg, svg, { y, bot, top, step, x0: padL, x1: W - padR, labelX: padL - 6 });
+    spans.forEach((s2, i) => {
+      const xc = padL + slot * i + slot / 2;
+      const lo = Math.min(s2.from, s2.to), hi = Math.max(s2.from, s2.to);
+      const h = Math.max(2, y(lo) - y(hi));
+      const down = s2.to < s2.from;
+      const bar = vbar(svg, xc - bw / 2, down ? y(hi) : y(lo), bw, h, s2.color, down);
+      const d = s2.level ? s2.to : s2.d;
+      const label = (d < 0 ? "−" : s2.level ? "" : "+") + compact(Math.abs(d));
+      const ly = down ? y(lo) + 14 : y(hi) - 5;
+      const t = text(svg, xc, ly, label, "bar-label", "middle");
+      if (bar) bar._hlLabel = t;
+      text(svg, xc, H - padB + 16, truncate(s2.name, Math.floor(slot / 11)), "axis-label", "middle");
+      if (i < n - 1) {   // 次の棒へ水準をつなぐ細線
+        line(svg, xc + bw / 2, y(s2.to), xc + slot - bw / 2, y(s2.to), cssVar("--muted"), "2,2");
+      }
+      const hit = rect(svg, xc - slot / 2, padT, slot, plotH, "transparent");
+      hit.addEventListener("pointermove", (evt) => {
+        showTip(evt, s2.name, s2.level
+          ? [{ name: "純資産", value: sfmt(s2.to), color: s2.color }]
+          : [{ name: "増減", value: sfmt(s2.d), color: s2.color, cls: s2.d < 0 ? "neg" : "" },
+             { name: "前月", value: sfmt(s2.from) }, { name: "今月", value: sfmt(s2.to) }]);
+      });
+      hit.addEventListener("pointerleave", hideTip);
+    });
+    box.appendChild(svg);
   }
 
   // 資産タブの純資産推移は隣のリスク評価カードと同じ行に並ぶ。行の高さは
@@ -432,6 +647,10 @@
         showTip(evt, p.month, rows, pie);
       });
       hit.addEventListener("pointerleave", hideTip);
+      if (box._onMonthClick && i > 0) {
+        hit.style.cursor = "pointer";
+        hit.addEventListener("click", (e) => { e.stopPropagation(); box._onMonthClick(i); });
+      }
     });
     const scroller = document.createElement("div");
     scroller.className = "nw-scroll";
@@ -510,7 +729,7 @@
       const tdName = document.createElement("td");
       const dot = document.createElement("span");
       dot.className = "dot" +
-        (anchor ? " " + staleness(anchor.date, a.update_interval_days) : "");
+        (anchor && !a.synthetic ? " " + staleness(anchor.date, a.update_interval_days) : "");
       tdName.appendChild(dot);
       tdName.appendChild(document.createTextNode(a.name));
       tr.appendChild(tdName);
@@ -584,10 +803,75 @@
       mkTile(kpis, "評価損益", sfmt(pl), "評価額 − 拠出累計",
              "small " + (pl >= 0 ? "pos" : "neg"));
     }
+    drawDcAlloc($("#dc-alloc"), entries);
     $("#dc-note").textContent =
       names.join("・") + " のスナップショットから逆算した内訳。" +
       "本人分は台帳の振替(給与天引き)の合計、事業主分はその差で、" +
       "分解の解像度は保存の頻度に依存する。";
+  }
+
+  // DCの資産配分バー(資産構成バーと同じ「角丸・境界線なし」の1レーン)。
+  // 幅が許すセグメントには名前と金額を直接書き、凡例に割合を添える
+  function drawDcAlloc(box, entries) {
+    box.replaceChildren();
+    const withAlloc = entries.filter(([, b]) => b.alloc);
+    if (!withAlloc.length) return;
+    if (!box._allocRO) {
+      box._allocRO = new ResizeObserver(() => {
+        const w = Math.max(300, Math.min(920, box.clientWidth || 0));
+        if (box.clientWidth && w !== box._allocW) drawDcAlloc(box, entries);
+      });
+      box._allocRO.observe(box);
+    }
+    const W = Math.max(300, Math.min(920, box.clientWidth || 920));
+    box._allocW = W;
+    for (const [id, b] of withAlloc) {
+      const segs = Object.entries(b.alloc).map(([cls, v]) =>
+        ({ name: cls, v, color: allocBucket(cls).color }));
+      const total = segs.reduce((s, g) => s + g.v, 0);
+      if (total <= 0) continue;
+      const laneH = W < 480 ? 26 : 19;
+      const svg = mkSvg(W, laneH + 2);
+      const clip = document.createElementNS(SVGNS, "clipPath");
+      clip.setAttribute("id", "dc-alloc-clip-" + nextSvgSeq());
+      rect(clip, 1, 1, W - 2, laneH, "none").setAttribute("rx", 4);
+      svgDefs(svg).appendChild(clip);
+      const g = document.createElementNS(SVGNS, "g");
+      g.setAttribute("clip-path", `url(#${clip.getAttribute("id")})`);
+      svg.appendChild(g);
+      let x = 1;
+      const wedges = (hover) => segs.map((s2) =>
+        ({ name: s2.name, value: s2.v, color: s2.color, hl: s2.name === hover }));
+      for (const s2 of segs) {
+        const w = s2.v / total * (W - 2);
+        const r = segRect(g, x, 1, w, laneH, s2.color, "right");
+        // 資産構成バーと同じ段階でラベルを詳しくする(名前→名前+金額)
+        const mid = `${s2.name} ${compact(s2.v)}`;
+        const pick = w >= mid.length * 10.5 + 10 ? mid
+          : w >= s2.name.length * 10.5 + 8 ? s2.name : "";
+        if (pick) {
+          const t = text(g, x + w / 2, 1 + laneH / 2 + 3.7, pick, "seg-label", "middle");
+          t.style.pointerEvents = "none";
+          r._hlLabel = t;
+        }
+        r.addEventListener("pointermove", (evt) => {
+          showTip(evt, (ACCOUNTS[id] || {}).name || id, [
+            { name: s2.name, value: fmt(s2.v), color: s2.color,
+              pct: Math.round(s2.v / total * 100) + "%" },
+          ], wedges(s2.name));
+        });
+        r.addEventListener("pointerleave", hideTip);
+        x += w;
+      }
+      box.appendChild(svg);
+      const legend = document.createElement("div");
+      legend.className = "comp-legend";
+      for (const s2 of segs) {
+        legendKey(legend, SW + "background:" + s2.color, s2.name,
+                  { value: fmt(s2.v) + " " + Math.round(s2.v / total * 100) + "%" });
+      }
+      box.appendChild(legend);
+    }
   }
 
   // 運用カード
@@ -630,7 +914,7 @@
           + (Math.abs(y.annual) * 100).toFixed(1) + "%/年" : "—";
       hd.textContent = `${label}: 計 ${sfmt(y.gain)}(${rate})`;
       parts.appendChild(hd);
-      // 原寸+横スクロール(狭い画面で viewBox 縮小すると文字が潰れる)
+      // 原寸+横スクロール(狭い画面で viewBox 縮小すると文字が小さくなって読めない)
       const svg = mkFixedSvg(W, comps(y).length * rowH + 4);
       comps(y).forEach(([name, v, col], i) => {
         const yc = 2 + rowH * i + rowH / 2;
@@ -695,8 +979,8 @@
         let cum = 0;
         for (const [, v, c] of compRows[i]) {
           if (!v || v <= 0) continue;
-          rect(bar, bx, mc.y(cum + v), barW,
-               Math.max(1, mc.y(cum) - mc.y(cum + v)), c);
+          segRect(bar, bx, mc.y(cum + v), barW,
+                  Math.max(1, mc.y(cum) - mc.y(cum + v)), c, "up");
           cum += v;
         }
       }
@@ -706,8 +990,8 @@
         let cum = 0;
         for (const [, v, c] of compRows[i]) {
           if (!v || v >= 0) continue;
-          rect(bar, bx, mc.y(cum), barW,
-               Math.max(1, mc.y(cum + v) - mc.y(cum)), c);
+          segRect(bar, bx, mc.y(cum), barW,
+                  Math.max(1, mc.y(cum + v) - mc.y(cum)), c, "down");
           cum += v;
         }
       }
@@ -731,8 +1015,17 @@
   // リスク評価カード
   // 資産・負債を「何の価格に連動するか」で束ねる。分類は粗く保つ
   // (ファンドの国別内訳までは割らない=疑似精度を避ける)。
-  // DCは内訳データが無いため暫定で国内株式(円建て変動)扱い(ユーザー方針)。
+  // 企業型DCはDCポータルの資産配分(資産クラス別評価額)をそのまま使う。
   // シナリオはざっくりの固定想定で、発生確率は主張しない
+  // DCの資産クラス → リスク評価のバケツ(外貨連動 / 円建て変動 / 残りは円建て固定)。
+  // 色もそのバケツの色を継ぎ、同じバケツ内は濃淡で区別する(リスク評価の
+  // 横棒と見比べられるように)
+  function allocBucket(cls) {
+    const fx = /外国|海外/.test(cls);
+    const dom = !fx && /株式/.test(cls);
+    const base = fx ? cssVar("--cat7") : dom ? cssVar("--cat1") : cssVar("--cat2");
+    return { fx, dom, color: shade(base, /債券/.test(cls) && fx ? 1 : 0) };
+  }
   function renderRisk() {
     const card = $("#risk-card");
     if (!COMP.assets && !COMP.liab) { card.style.display = "none"; return; }
@@ -747,7 +1040,14 @@
     for (const [id, b] of Object.entries(BALS)) {
       const a = ACCOUNTS[id];
       if (!a || a.kind !== "asset" || b.balance <= 0) continue;
-      if (a.group === "年金") dom += b.balance;
+      if (b.alloc) {
+        // 資産クラス別内訳を持つ口座(DC)。債券・元本確保型は下の
+        // 円建て固定(残差)に落ちる
+        for (const [cls, v] of Object.entries(b.alloc)) {
+          const { fx: f, dom: d } = allocBucket(cls);
+          fx += f ? v : 0; dom += d ? v : 0;
+        }
+      } else if (a.group === "年金") dom += b.balance;
       else if (/金・銀・プラチナ|貴金属/.test(a.name)) fx += b.balance;
     }
     // 残り(預金・現金・電子マネー・証券口座の現金余力等)はすべて円建て固定
@@ -776,7 +1076,7 @@
     }
     const rowH = 26, padL = 134, padR = 70;
     const maxV = Math.max(1, cash, dom, fx, debt);
-    // 原寸+横スクロール(狭い画面で viewBox 縮小すると文字が潰れる)
+    // 原寸+横スクロール(狭い画面で viewBox 縮小すると文字が小さくなって読めない)
     const svg = mkFixedSvg(W2, rows.length * rowH + 6);
     rows.forEach(([name, v, col, hint], i) => {
       const yc = 3 + rowH * i + rowH / 2;
@@ -947,7 +1247,13 @@
       alloc._allocRO.observe(alloc);
     }
 
-    // 保有銘柄: 上位5行だけカードに出し、全量はフローティングカードで
+    // 保有銘柄: 上位5行だけカードに出し、全量はフローティングカードで。
+    // 同じファンドがNISAの枠ごとに別行で出るので、預り区分を短い札で添える
+    const kubunOf = (h) => {
+      const s = h.section || "";
+      return /つみたて投資枠/.test(s) ? "積" : /成長投資枠/.test(s) ? "成"
+        : /特定/.test(s) ? "特" : /一般/.test(s) ? "般" : "";
+    };
     const fillHoldings = (tb, list) => {
       tb.replaceChildren();
       for (const h of list) {
@@ -966,6 +1272,14 @@
           td.textContent = v;
           if (cls) td.className = cls;
           tr.appendChild(td);
+        }
+        const k = kubunOf(h);
+        if (k) {
+          const b = document.createElement("span");
+          b.className = "badge";
+          b.style.marginLeft = "6px";
+          b.textContent = k;
+          tr.firstChild.appendChild(b);
         }
         tb.appendChild(tr);
       }
@@ -1011,7 +1325,7 @@
     const mc = monthlyChart(ms, {
       h: 200, per: 40, minW: 320, padL, padR, top, step, noAxis: true,
       // 最深の売却棒の下にラベル1行分(13px)の余白を確保する。足りなければ
-      // 目盛りを1段ずつ下へ伸ばす(ラベルを棒の横に避難させない)
+      // 目盛りを1段ずつ下へ伸ばす(ラベルを棒の横へ移さない)
       bot: (plotH) => {
         let b = maxS > 0 ? -Math.ceil(maxS / sStep) * sStep : 0;
         while (maxS > 0 && plotH * (-b - maxS) / (top - b) < 13) b -= sStep;
@@ -1047,8 +1361,8 @@
         for (const [n] of IG) {
           const v = b.get(n) || 0;
           if (v <= 0) continue;
-          rect(bar, bx, y(cum + v), barW,
-               Math.max(1, y(cum) - y(cum + v)), igColor.get(n));
+          segRect(bar, bx, y(cum + v), barW,
+                  Math.max(1, y(cum) - y(cum + v)), igColor.get(n), "up");
           cum += v;
         }
         text(svg, bx + barW / 2, y(bTot) - 3, compact(bTot),
@@ -1060,8 +1374,8 @@
         for (const [n] of IG) {
           const v = sl.get(n) || 0;
           if (v <= 0) continue;
-          rect(bar, bx, y(-cum), barW,
-               Math.max(1, y(-cum - v) - y(-cum)), igColor.get(n));
+          segRect(bar, bx, y(-cum), barW,
+                  Math.max(1, y(-cum - v) - y(-cum)), igColor.get(n), "down");
           cum += v;
         }
         // 下端の余白は目盛り側で確保済み(bot の拡張)なので常に棒の下に書く
@@ -1146,7 +1460,7 @@
                           inv.portfolio ? inv.portfolio.total_value : 0);
     const step = niceStep(maxV);
     const top = Math.ceil(maxV / step) * step;
-    // 含み益線(評価額−元本)は含み損の期間に負へ落ちるため、必要なときだけ
+    // 含み益線(評価額−元本)は含み損の期間に負になるため、必要なときだけ
     // 軸を下に伸ばす
     const costAt = (d) => {
       let c = 0;
@@ -1185,7 +1499,7 @@
              csurf, 0.18);
     polyline(svg, stepPts, csurf, 2);
     // 評価額の折れ線。点は打たず、ツールチップは透明な太線をヒット領域に
-    // して最寄りの点を出す(最新ポートフォリオの点も value_history に居る)
+    // して最寄りの点を出す(最新ポートフォリオの点も value_history に含まれる)
     const vpts = valPts.slice().sort((a, b) => a.date.localeCompare(b.date));
     const ink = cssVar("--ink");
     // 含み益は他所(資産構成・純資産推移)の斜線ストライプと同じ証券色
@@ -1207,9 +1521,9 @@
     else if (plPts.length === 1) circle(svg, plPts[0][0], plPts[0][1], 3, plc);
     if (vpts.length >= 2) {
       // 実測点をそのまま結ぶと、買付(元本の垂直ジャンプ)の直後に実測点が
-      // ない区間で補間線が元本の階段の角に刺さる。約定日には評価額も同額
+      // ない区間で補間線が元本の階段の角を横切る。約定日には評価額も同額
       // だけ垂直に動かし、残り(相場由来の残差)だけを区間内の時間比で
-      // 線形に消化する。合成されるのは区間の内側だけで、実測点の値は不変
+      // 線形に配分する。合成されるのは区間の内側だけで、実測点の値は不変
       const tms = (d) => new Date(d).getTime();
       const pts = [[x(vpts[0].date), y(vpts[0].val)]];
       for (let i = 0; i < vpts.length - 1; i++) {
@@ -1255,7 +1569,7 @@
   }
 
   // 配当は約定イベントでなく証券口座への入金(収入)として明細に入る。
-  // 銘柄は摘要の「株式配当金(NISA:非課税) 銘柄名」の括弧までを落として取る
+  // 銘柄は摘要の「株式配当金(NISA:非課税) 銘柄名」の括弧までを除いて取る
   const divName = (d) => d.replace(/^[^(]*\([^)]*\)\s*/, "").trim() || d;
   // 配当・分配金の入金明細(証券口座の収入で摘要かカテゴリに配当/分配を含む)
   function dividendTxns() {
@@ -1338,6 +1652,9 @@
   // 保有銘柄の全量フローティングカード(tab-watch と同じ閉じ方の作法)
   const closeHoldings = () => { $("#holdings-bg").style.display = "none"; };
   $("#holdings-close").addEventListener("click", closeHoldings);
+  $("#nw-delta-close").addEventListener("click", () => { $("#nw-delta-card").hidden = true; });
+  // 資産タブの純資産推移だけ月クリックで変化の内訳を開く(概要タブはホバーのみ)
+  $("#as-networth")._onMonthClick = renderNwDelta;
   $("#holdings-bg").addEventListener("click", (e) => {
     if (e.target === $("#holdings-bg")) closeHoldings();
   });

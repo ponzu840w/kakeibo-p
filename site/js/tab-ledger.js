@@ -14,7 +14,7 @@
     return sw;
   }
   // カテゴリ候補を中分類ごとに束ねる。並びは rules.toml の宣言順
-  // (= 中分類色 --cat1〜9 の割当順)。未登録カテゴリは「その他」に寄る
+  // (= 中分類色 --cat1〜9 の割当順)。未登録カテゴリは「その他」に入る
   function catOptionGroups() {
     const groups = [];
     const idx = new Map();
@@ -52,8 +52,8 @@
   // 既存カテゴリからの選択が主。新規カテゴリの作成ボタンは常に最下部に
   // 見えているが、絞り込み文字列が既存のどれにも一致しないときだけ
   // 活性化する。誤タイプで増えた未知のカテゴリは rules.toml の
-  // category_groups に無いため中分類チャートで「その他」に落ちる
-  // (= 静かに壊れる)ので、「選ぶ」と「作る」を別の操作に分ける。
+  // category_groups に無いため中分類チャートで「その他」に入る
+  // (= 気づかないうちに集計がおかしくなる)ので、「選ぶ」と「作る」を別の操作に分ける。
   // 戻り値は .txn-edit にそのまま置ける要素で、選択値は getValue() で読む
   function catPicker(initial, canClear) {
     const opts = catOptionGroups();
@@ -145,7 +145,7 @@
         b.addEventListener("click", () => pick(raw));
         const w = document.createElement("div");
         w.className = "warn";
-        w.textContent = "新規カテゴリは中分類「その他」となる。rules.toml の [category_groups] に追記で更新可能";
+        w.textContent = "新規カテゴリの中分類は「その他」になる。rules.toml の [category_groups] に追記すれば変更できる";
         newBox.append(b, w);
       } else {
         // 既存名と一致(またはラッチ前の空欄)の間は押せない案内板として置く
@@ -208,7 +208,7 @@
 
   // 手動上書き(カテゴリ・コメント)の保存
   // serve.py 配信下でのみ編集できる。明細タブの詳細展開の「保存」が
-  // data/overrides.toml への書込→build→リロードまで一気に行う。
+  // data/overrides.toml への書込→build→リロードまで続けて行う。
   // file:// で開いた場合は編集フォームを無効化(閲覧専用)する。
   // 有効かどうかは KB.OVR_SRV(main.js の /api/ping 確認後に true になる、
   // ライブ参照が必要な可変フラグなので destructure しない)。
@@ -259,12 +259,24 @@
     const tr = document.createElement("tr");
     tr.className = "txn-detail";
     const td = document.createElement("td");
-    td.colSpan = 5;
+    td.colSpan = 6;
     const parts = [];
     if (t.rule) parts.push(["根拠", t.rule]);
     if (t.type === "transfer") {
       const c = ACCOUNTS[t.counter] ? ACCOUNTS[t.counter].name : t.counter;
-      parts.push(["振替", c + (t.pair ? "(相手側の明細と突合済)" : "(相手側の明細なし)")]);
+      parts.push(["振替", c + (t.pair ? "(相手側の明細と突合済)"
+        : t.settle !== t.id ? "(相手側の明細なし)"
+        : isSalary(t) ? "(給与明細と照合済)" : "(請求明細と照合済)")]);
+    }
+    const dep = t.settle && t.settle !== t.id && TX_BY_ID.get(t.settle);
+    if (dep) {
+      const n = ACCOUNTS[dep.account] ? ACCOUNTS[dep.account].name : dep.account;
+      if (isSalary(t)) {
+        parts.push(["振込", `${n} ${dep.date}(手取り ${fmt(dep.amount)})`]);
+      } else {
+        const cnt = TXNS.filter((x) => x.settle === dep.id && x !== dep).length;
+        parts.push(["引落", `${n} ${dep.date}(請求 ${fmt(-dep.amount)}・${cnt}件)`]);
+      }
     }
     if (t.raw_description && t.raw_description !== t.description) {
       // ルールの pattern は正規化済み摘要に評価される。原文(中点・半角カナ
@@ -353,6 +365,9 @@
     return tr;
   }
 
+  // 未突合振替: 相手側の明細とも給与明細とも対応が付いていない振替
+  const unmatched = (t) => t.type === "transfer" && !t.pair && !t.settle;
+
   // 明細表に実際に出る行(共通フィルタ済みの txns に明細タブ専用の
   // 絞り込みを重ねて新しい順)。テーブル描画とCSVエクスポートで共有する
   function visibleRows(txns) {
@@ -360,11 +375,12 @@
     if (state.hideTransfer) {
       rows = rows.filter((t) => t.type !== "transfer" && t.type !== "adjustment");
     }
-    // 明細タブ専用の絞り込み(独立に効く)。上書きあり=カテゴリの手動上書き
+    // 明細タブ専用の絞り込み(それぞれ独立に適用する)。上書きあり=カテゴリの手動上書き
     if (state.fOverride) {
       rows = rows.filter((t) => (OVR_BY_ID.get(t.id) || {}).category);
     }
     if (state.fComment) rows = rows.filter((t) => t.comment);
+    if (state.fUnmatched) rows = rows.filter(unmatched);
     return rows;
   }
 
@@ -396,10 +412,162 @@
   }
   $("#csv-btn").addEventListener("click", exportCsv);
 
+  // 対応する行を結ぶ線(突合済みの振替ペア、給与明細の各行と手取り振込、
+  // カード請求の利用行と引落)。表に重ねた1枚のSVGで、行の高さは明細の
+  // 開閉や折り返しで変わるため、表のサイズが変わるたびに位置を測り直す。
+  // カード請求は利用行が約1か月に散らばり1通で数百行にまたがるので、
+  // 常設すると線の列が埋まって読めない。ホバーした請求だけを最外の
+  // 2レーンに描く
+  let pairView = null;   // { rows, trs, spans, lanes, bills }(renderTable が更新)
+  const grpOf = (id) => (ACCOUNTS[id] || {}).group;
+  // 給与の対応: 明細の行は給与口座上、手取り振込は給与口座が相手
+  const isSalary = (t) => grpOf(t.account) === "給与" || grpOf(t.counter) === "給与";
+  const lineKey = (t) => t.pair || (t.settle && isSalary(t) ? t.settle : "");
+  const billKey = (t) => (!t.pair && t.settle && !isSalary(t) ? t.settle : "");
+  const pairSvg = document.createElementNS(KB.SVGNS, "svg");
+  pairSvg.id = "pair-lines";
+  $("#txn-table").after(pairSvg);
+  const pairPaths = new Map();   // pair → path
+  let hoverKey = "";             // 引き直しても強調を保つ
+
+  function drawPairs() {
+    pairSvg.replaceChildren();
+    pairPaths.clear();
+    const table = $("#txn-table");
+    const box = table.getBoundingClientRect();
+    const show = pairView && (pairView.spans.length || pairView.bills.size)
+      && box.height;
+    // 前回の大きさが残ると、短くなった表の下にはみ出してスクロールを生む
+    pairSvg.setAttribute("width", show ? box.width : 0);
+    pairSvg.setAttribute("height", show ? box.height : 0);
+    if (!show) return;
+    pairSvg.style.left = table.offsetLeft + "px";
+    pairSvg.style.top = table.offsetTop + "px";
+    const gut = table.querySelector("th.pair-col").getBoundingClientRect();
+    const x0 = gut.left - box.left;
+    const step = Math.min(10, (gut.width - 6)
+      / (pairView.lanes + (pairView.bills.size ? 2 : 0)));
+    const mid = (tr) => {
+      const r = tr.getBoundingClientRect();
+      return r.top - box.top + r.height / 2;
+    };
+    const yOf = (i) => mid(pairView.trs[i]);
+    // 両端を曲線で折り返す括弧(ys は昇順)。途中の行の枝は中心 yc へ
+    // 流れ込む向きに曲げる
+    const bend = (y, x, toward) => {
+      const r = Math.min(10, Math.abs(toward - y));
+      return ` M${x0},${y} Q${x},${y} ${x},${y + Math.sign(toward - y) * r}`;
+    };
+    const bracket = (ys, x, yc) => {
+      const ya = ys[0], yb = ys[ys.length - 1], r = Math.min(10, (yb - ya) / 2);
+      return `M${x0},${ya} Q${x},${ya} ${x},${ya + r} V${yb - r} Q${x},${yb} ${x0},${yb}`
+        + ys.slice(1, -1).map((y) => bend(y, x, yc)).join("");
+    };
+    const drawSpan = (sp, lane, kind) => {
+      const xIn = x0 + (lane + 1) * step;
+      let d;
+      if (sp.depth === 2) {
+        // トーナメント: 多側を内側の括弧で束ね、束の中から外側のレーンを
+        // 通って1側へ。1側が束の中に挟まっても、その線が束を1回跨ぐだけ
+        const ys = sp.members.map(yOf), yh = yOf(sp.hub);
+        // 幹は中央の2行の間から出す(行の高さだとその行の枝と一直線に
+        // つながり、その行だけが1側と結ばれているように見える)
+        const k = Math.floor((ys.length - 1) / 2);
+        const yc = (ys[k] + ys[k + 1]) / 2;
+        const xOut = xIn + step, dir = Math.sign(yh - yc) || 1;
+        const r = Math.min(10, Math.abs(yh - yc) / 2);
+        d = bracket(ys, xIn, yc) + ` M${xIn},${yc} Q${xOut},${yc} ${xOut},${yc + dir * r}`
+          + ` V${yh - dir * r} Q${xOut},${yh} ${x0},${yh}`;
+      } else {
+        const ys = sp.rows.map(yOf);
+        d = bracket(ys, xIn, (ys[0] + ys[ys.length - 1]) / 2);
+      }
+      const path = document.createElementNS(KB.SVGNS, "path");
+      path.setAttribute("d", d);
+      if (kind) path.classList.add(kind);
+      if (sp.key === hoverKey) path.classList.add("on");
+      pairSvg.appendChild(path);
+      pairPaths.set(sp.key, path);
+      for (const i of sp.rows) {
+        const dot = document.createElementNS(KB.SVGNS, "circle");
+        dot.setAttribute("cx", x0);
+        dot.setAttribute("cy", yOf(i));
+        dot.setAttribute("r", i === sp.hub && sp.depth === 2 ? 3.5 : 2.5);
+        if (i === sp.hub && sp.depth === 2) dot.classList.add("hub");
+        if (kind) dot.classList.add(kind);
+        pairSvg.appendChild(dot);
+      }
+    };
+    // 給与は収入色、カード請求は支出色で振替ペアと見分ける
+    for (const sp of pairView.spans) {
+      drawSpan(sp, sp.lane, pairView.rows[sp.a].pair === sp.key ? "" : "settle");
+    }
+    const bill = pairView.bills.get(stickyBill);
+    if (bill) {
+      drawSpan(bill, pairView.lanes, "bill");
+      pairPaths.get(bill.key).classList.add("on");
+    }
+  }
+  new ResizeObserver(drawPairs).observe($("#txn-table"));
+
+  const spanOf = (t) => {
+    const k = lineKey(t);
+    return k ? pairView.spans.find((s) => s.key === k)
+      : pairView.bills.get(billKey(t)) || null;
+  };
+
+  // カード請求の線は画面外の行と結ばれることが多いので、ホバーを外しても
+  // 残す(ジャンプで相手へ移動しても見失わない)。消えるのは別の対応への
+  // ホバー、ジャンプ以外のクリック、表の再描画のとき
+  let stickyBill = "";
+  function clearSticky() {
+    const sp = stickyBill && pairView.bills.get(stickyBill);
+    stickyBill = "";
+    if (!sp) return;
+    for (const i of sp.rows) pairView.trs[i].classList.remove("pair-hl");
+    drawPairs();
+  }
+  // ジャンプのクリックは stopPropagation するのでここに届かない
+  document.addEventListener("click", () => { if (stickyBill) clearSticky(); });
+
+  function hlPair(t, on) {
+    const sp = spanOf(t);
+    if (!sp) return;
+    const bill = pairView.bills.has(sp.key);
+    if (on && stickyBill !== sp.key) clearSticky();
+    if (bill && !on) return;
+    hoverKey = on ? sp.key : "";
+    for (const i of sp.rows) pairView.trs[i].classList.toggle("pair-hl", on);
+    if (bill) {
+      stickyBill = sp.key;
+      drawPairs();
+      return;
+    }
+    const path = pairPaths.get(sp.key);
+    if (path) path.classList.toggle("on", on);
+  }
+
+  // 線の付け根(行末の線の列)のクリックで相手の行へ移動して一瞬光らせる。
+  // 一対多では明細の行→振込の行、振込の行→最寄りの明細の行
+  function jumpPair(t, from) {
+    const sp = spanOf(t);
+    if (!sp) return false;
+    const me = pairView.trs.indexOf(from);
+    const near = sp.rows.filter((i) => i !== me)
+      .sort((x, y) => Math.abs(x - me) - Math.abs(y - me))[0];
+    const to = pairView.trs[sp.hub >= 0 && sp.hub !== me ? sp.hub : near];
+    to.scrollIntoView({ block: "center" });
+    to.classList.remove("pair-jump");
+    void to.offsetWidth;   // クラスを付け直してアニメーションを再始動
+    to.classList.add("pair-jump");
+    return true;
+  }
+
   function renderTable(txns) {
     const tbody = $("#txn-table tbody");
     tbody.replaceChildren();
     const rows = visibleRows(txns);
+    const trs = [];
     let focusRow = null;
     for (const t of rows) {
       const tr = document.createElement("tr");
@@ -421,7 +589,7 @@
       const badge = document.createElement("span");
       badge.className = "badge" + (t.category === "未分類" ? " uncls" : "");
       if (t.type === "transfer") {
-        badge.textContent = "振替→"
+        badge.textContent = (t.amount > 0 ? "振替←" : "振替→")
           + (ACCOUNTS[t.counter] ? ACCOUNTS[t.counter].name : t.counter);
       } else {
         const g = catGroup(t.category);
@@ -431,8 +599,17 @@
       td4.appendChild(badge);
       const td5 = document.createElement("td");
       td5.className = "num" + (t.amount > 0 ? " pos" : t.amount < 0 ? " neg" : "");
-      td5.textContent = (t.amount > 0 ? "+" : "") + fmt(t.amount);
-      for (const td of [td1, td2, td3, td4, td5]) tr.appendChild(td);
+      const amt = (t.amount > 0 ? "+" : "") + fmt(t.amount);
+      td5.textContent = t.type === "transfer" ? "(" + amt + ")" : amt;
+      const td6 = document.createElement("td");
+      td6.className = "pair-col";
+      td6.addEventListener("click", (ev) => {
+        if (jumpPair(t, tr)) ev.stopPropagation();
+      });
+      for (const td of [td1, td2, td3, td4, td5, td6]) tr.appendChild(td);
+      tr.addEventListener("mouseenter", () => hlPair(t, true));
+      tr.addEventListener("mouseleave", () => hlPair(t, false));
+      trs.push(tr);
       tr.addEventListener("click", () => {
         const next = tr.nextElementSibling;
         if (next && next.classList.contains("txn-detail")) {
@@ -451,6 +628,16 @@
       }
     }
     $("#txn-count").textContent = `${rows.length}件`;
+    const hubs = rows.map((t) => !t.pair && t.settle === t.id);
+    pairView = { rows, trs, ...KB.pairLanes(rows.map(lineKey), hubs) };
+    pairView.bills = new Map(KB.pairLanes(rows.map(billKey), hubs).spans
+      .map((sp) => [sp.key, sp]));
+    hoverKey = "";
+    stickyBill = "";
+    for (const sp of [...pairView.spans, ...pairView.bills.values()]) {
+      for (const i of sp.rows) trs[i].lastChild.classList.add("has-pair");
+    }
+    drawPairs();
     if (focusRow) {
       focusRow.scrollIntoView({ block: "center" });
     }
@@ -461,7 +648,7 @@
 
   // 未分類ランキング(ルール追加の候補)
   // 分類を決めるのは rules.toml の人手ルールだけ。ここは「どのルールを書けば
-  // 一番効くか」を示すだけで、推測で分類はしない(build.py --check と同じ集計)
+  // 一番多くの明細を分類できるか」を示すだけで、推測で分類はしない(build.py --check と同じ集計)
   function uncategorizedRanking() {
     const agg = new Map();
     for (const t of TXNS) {
@@ -474,7 +661,7 @@
       a.amount += Math.abs(t.amount);
       if (t.date > a.last) a.last = t.date;
     }
-    // 潰し切るための一覧なので件数は打ち切らない(未分類が残っている限り
+    // 未分類をなくしていくための一覧なので件数は打ち切らない(未分類が残っている限り
     // 行数は未分類の摘要の種類数どまり)
     return [...agg.values()]
       .sort((x, y) => y.count - x.count || y.amount - x.amount);
@@ -488,7 +675,7 @@
     const total = TXNS.filter((t) => t.category === "未分類"
       && (t.type === "income" || t.type === "expense")).length;
     $("#uncls-summary").textContent =
-      `未分類 ${total}件 — ルール追加の候補 ${rows.length}摘要(全件)`;
+      `未分類 ${total}件・ルール追加の候補 ${rows.length}摘要(全件)`;
     const box = $("#uncls-list");
     box.replaceChildren();
     for (const r of rows) {
@@ -506,7 +693,7 @@
       a.textContent = fmt(r.amount);
       row.append(nm, n, a);
       // 期間などの絞り込みが残っていると「押しても表に出ない」ので、
-      // 全部落としてから検索する(jumpToSearch)
+      // 全部解除してから検索する(jumpToSearch)
       row.addEventListener("click", () => KB.jumpToSearch(r.key));
       box.appendChild(row);
     }

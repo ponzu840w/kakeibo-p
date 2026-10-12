@@ -146,7 +146,7 @@
                       g.removed.length && `解消${g.removed.length}`]
           .filter(Boolean).join("・");
         d.appendChild(el("summary", "",
-                         g.ts + times + (g.ok ? "" : " — ビルド失敗")
+                         g.ts + times + (g.ok ? "" : " ビルド失敗")
                          + (diff ? `(${diff})` : "")));
         if (g.error) d.appendChild(el("pre", "bl-error", g.error));
         const added = new Set(g.added);
@@ -186,7 +186,7 @@
       history.pushState(null, "", "#" + id);
     }
     // scrollChart 製の月次チャートは非表示タブでは幅0のまま描かれ最新側へ
-    // 寄れないので、タブが可視になった時点で右端(最新月)へスクロールし直す
+    // スクロールできないので、タブが可視になった時点で右端(最新月)へスクロールし直す
     document.querySelectorAll(".tabbed.active .hscroll").forEach(
       (s) => { s.scrollLeft = s.scrollWidth; });
   }
@@ -199,7 +199,7 @@
     b.addEventListener("click", () => setTab(b.dataset.tab)));
   document.querySelectorAll(".card.link").forEach((c) =>
     c.addEventListener("click", () => { hideTip(); setTab(c.dataset.goto); }));
-  // サマリタイル行の上の i で脚注を開閉(常時表示にすると縦幅を食うため)
+  // サマリタイル行の上の i で脚注を開閉(常時表示にすると縦幅をとるため)
   $("#sum-kpi-info").addEventListener("click", (e) => {
     const note = $("#sum-kpi-note");
     note.hidden = !note.hidden;
@@ -276,7 +276,7 @@
       let warn, stale, due = "", nextWarn = "";
       if (r.update_day) {
         // 月次更新日の宣言(給料日・カード確定日)は「直近の更新日以降の
-        // 取込があるか」で判定(猶予なし)。2回連続で逃したら強表示
+        // 取込があるか」で判定(猶予なし)。2回続けて取り込まなかったら強調表示
         const dueD = monthlyDue(todayIso, r.update_day);
         const prevD = monthlyDue(
           KB.localIso(new Date(dueD.getTime() - 864e5)), r.update_day);
@@ -539,6 +539,9 @@
     $("#f-comment").addEventListener("change", (e) => {
       state.fComment = e.target.checked; render();
     });
+    $("#f-unmatched").addEventListener("change", (e) => {
+      state.fUnmatched = e.target.checked; render();
+    });
   })();
 
   // フィルタUIを state に合わせ直す(state を直接動かす導線のあと始末)
@@ -550,10 +553,11 @@
     $("#f-search").value = state.search;
     $("#f-override").checked = state.fOverride;
     $("#f-comment").checked = state.fComment;
+    $("#f-unmatched").checked = state.fUnmatched;
   }
   // 摘要で明細タブへ飛ぶ(未分類ランキング等)。対象が現在の絞り込みの
   // 外にいると「クリックしたのに何も出ない」になるため、期間を含む
-  // 絞り込みを全部落としてから検索し直す。振替の表示可否(hideTransfer)は
+  // 絞り込みを全部解除してから検索し直す。振替の表示可否(hideTransfer)は
   // ユーザーの永続設定なので触らない
   function jumpToSearch(key) {
     hideTip();
@@ -563,6 +567,7 @@
     state.search = key;
     state.fOverride = false;
     state.fComment = false;
+    state.fUnmatched = false;
     syncFilterUI();
     setTab("ledger");
     render();
@@ -706,7 +711,7 @@
     $("#modal-bg").style.display = "";
   }
 
-  // タイルは6枚固定(純資産・先月収支実績・当月暫定収支・貯蓄率・
+  // タイルは6枚固定(純資産・先々月収支実績・当月暫定収支・貯蓄率・
   // 生活防衛資金・運用効率)。sub は1行に収め、前提の説明は下の脚注に
   // 集約する(タイルごとの長文注記で読ませない)。計算は stats.js。
   function renderSummary() {
@@ -767,7 +772,7 @@
          () => openMonthDetail(curMonth));
     // 貯蓄率(確定6ヶ月合算)。窓は賞与サイクル(年2回=約6ヶ月間隔)に
     // 合わせて6ヶ月。7〜8ヶ月にすると賞与を1回含む時期と2回含む時期が
-    // 交互に来てブレるため、賞与半サイクルの6が最も安定して応答も速い。
+    // 交互に来て値が揺れるため、賞与半サイクルの6が最も安定して応答も速い。
     // 当月・先月は支出が構造的に過小(カード請求ラグ)で貯蓄率が上振れる
     // ため窓に入れない(実績タイルを先々月にしたのと同じ理屈)。
     const done6 = months.filter((m) => m <= prev2).slice(-6);
@@ -843,7 +848,7 @@
     // 前提の脚注(タイル横断で1回だけ。行の上の i ボタンで開閉)
     KB.noteLines($("#sum-kpi-note"), [
       "当月・先月を除く直近6ヶ月実績を収支の平常値・予定値として採用。",
-      "当月暫定収支 = 収入予定− 固定費予定− 変動費(予定値と当月既知値との大きい方)。",
+      "当月暫定収支 = 収入予定 − 固定費予定 − 変動費(予定値と当月既知値の大きいほう)。",
       "運用効率 = (利息・配当 + DC・証券の評価損益等)÷ 期間平均総資産 の年率換算(金額加重)。",
     ]);
 
@@ -851,7 +856,7 @@
     drawNetWorth($("#sum-networth"), 240);
     drawMonthly($("#sum-monthly"), months.slice(-12), TXNS, { h: 190, yoyMap: MT.exp });
     drawOscillo($("#sum-osc"), months.slice(-6), TXNS, "cash", 190, 460);
-    // 直近30日(最終明細日基準)。暦月だと月初はデータが揃わずしょぼくなるため
+    // 直近30日(最終明細日基準)。暦月だと月初はデータが揃わず少なく見えるため
     const lastDate = TXNS.length ? TXNS[TXNS.length - 1].date : "";
     const cut = new Date(lastDate + "T00:00:00");
     cut.setDate(cut.getDate() - 29);

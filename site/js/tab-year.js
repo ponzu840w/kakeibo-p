@@ -10,7 +10,7 @@
     $, TXNS, NW, curMonth, state,
     effective, catGroup, fmt, sfmt, cYen, compact, niceStep,
     mkTile, note, showTip, hideTip,
-    scrollChart, rect, text, stackGroup, yAxis, legendKey, nowBand,
+    scrollChart, rect, text, stackGroup, segRect, yAxis, legendKey, nowBand,
   } = KB;
 
   // 年ごとの集計。income/expense は収入モード反映(effective)、
@@ -147,8 +147,8 @@
         let cum = 0;
         for (const c of nonzero) {
           const v = g.byGroup.get(c);
-          rect(bar, bx, y(cum + v), barW, Math.max(1, y(cum) - y(cum + v)),
-               catColor(c));
+          segRect(bar, bx, y(cum + v), barW, Math.max(1, y(cum) - y(cum + v)),
+                  catColor(c), "up");
           cum += v;
         }
         text(svg, bx + barW / 2, y(g.expense) - 3, compact(g.expense),

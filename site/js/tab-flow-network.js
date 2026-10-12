@@ -22,7 +22,7 @@
   // 収支モード: 期間全体の 収入源 → 家計 → 貯蓄・投資・中分類 → カテゴリ。
   // 口座間モード: 期間内の振替(口座→口座の資金移動)のトレース。
   // どちらも口座・カテゴリ・検索フィルタとは無関係に期間内の全取引から作る
-  // (フィルタを効かせると保存則が崩れて図が破綻するため)。
+  // (フィルタを適用すると流入と流出が釣り合わなくなり、図として成り立たないため)。
   function renderMoneyFlow() {
     if (state.flowMode === "transfer") { renderAccountFlow(); return; }
     const box = $("#flow-sankey");
@@ -72,7 +72,7 @@
     const saving = totalInc - totalExp - invest;   // 正=貯蓄・負=取り崩し
 
     // 収入源ノード。微小な源(総収入の1%未満)や上位6超はまとめて
-    // 「その他収入」にし、左端のラベルが潰れないようにする
+    // 「その他収入」にし、左端のラベルが重ならないようにする
     let incs = [...incMap.entries()]
       .filter(([, v]) => v >= totalInc * 0.01)
       .sort((a, b) => b[1] - a[1]);
@@ -108,7 +108,7 @@
     // 合流ノード「家計」。収入源はここへ注ぎ、投資・貯蓄・各中分類はここから
     // 出る。以前は収入源→各中間を収入比で按分していたが、それは「この収入が
     // この支出に使われた」という事実でない対応を示唆する(お金に色はない)
-    // うえ、全源×全中間の細いリボンで図が濁るため、1点合流に改めた
+    // うえ、全源×全中間の細いリボンで図が見づらくなるため、1点合流に改めた
     const srcTotal = incs.reduce((s, [, v]) => s + v, 0) + Math.max(0, -saving);
     const srcList = nodes.filter((nd) => nd.col === 0);
     nodes.push({ id: "pool", col: 1, label: "家計", value: srcTotal,
@@ -193,6 +193,11 @@
     if (state.fComment && !t.comment) {
       state.fComment = false;
       $("#f-comment").checked = false;
+      cleared = true;
+    }
+    if (state.fUnmatched && (t.type !== "transfer" || t.pair || t.settle)) {
+      state.fUnmatched = false;
+      $("#f-unmatched").checked = false;
       cleared = true;
     }
     setTab("ledger");
@@ -293,9 +298,9 @@
   //     給与からの振替として円に入るだけ(戻らない性質はツールチップの
   //     残高増で読める。専用の壁を設けるほどの流量・意味の分岐がない)
   //   ・負債口座(kind=liability)は負債色(--critical)の普通のノード。
-  //     立替や貸付は既存のエッジがそのまま語る(カードが支出へ払い、
+  //     立替や貸付は既存のエッジでそのまま表せる(カードが支出へ払い、
   //     銀行がカードへ返す)ので専用の壁は設けない(往復の壁線×口座数で
-  //     図が渋滞したための廃止)。未払残の増減はツールチップの
+  //     図が混み合ったため廃止した)。未払残の増減はツールチップの
   //     「負債増(借入超過)/負債減(返済超過)」で見せる
   //   ・資産口座の流入と流出の差(残高増/取り崩し)はノードの
   //     ツールチップで見せる(ネットワークは保存則を強制しないため、
@@ -443,7 +448,7 @@
                      value: incByAcc.get(acc), color: incColor });
       }
     }
-    // 支出はほぼ全口座と繋がるため円だと中央が渋滞する。下辺の壁にして
+    // 支出はほぼ全口座と繋がるため円だと中央が混み合う。下辺の壁にして
     // 各口座から垂直に落とす
     nodes.push({ id: "支出", label: "支出", value: totalExp,
                  color: cssVar("--expense"), wall: "bottom" });
@@ -476,7 +481,7 @@
                      color: cssVar("--expense") });
       } else {
         // 戻り超過の月(ポイント充当・返品等): 負の支出を負の太さで
-        // 描くと壊れる(√負=NaN)。売却の「壁から戻る」と同じ作法で、
+        // 描けない(√負=NaN)。売却の「壁から戻る」と同じ作法で、
         // 支出の壁からの戻りにする
         edges.push({ source: "支出", target: "acc:" + acc, value: -v,
                      color: cssVar("--expense") });

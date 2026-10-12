@@ -34,7 +34,7 @@
                        "年金", "手入力資産", "給与", "その他"];
   const GROUP_LABEL = { "銀行": "銀行残高", "決済・電子マネー": "電子マネー" };
   const glabel = (g) => GROUP_LABEL[g] || g;
-  // グループ色は固定スロット(機関のイメージカラーに寄せる: ゆうちょ=緑、
+  // グループ色は固定スロット(機関のイメージカラーに近づける: ゆうちょ=緑、
   // SBI証券=青)。存在するグループの並び順で色が揺れないようにする
   const GROUP_SLOT = { "銀行": 2, "証券": 1, "決済・電子マネー": 3,
                        "現金": 4, "年金": 7, "手入力資産": 5, "給与": 6 };
@@ -61,7 +61,7 @@
   // 内訳の濃淡階調。バー・ドーナツ・凡例のすべてで同じ表を使う(場所で
   // 濃さが変わると同じ口座を色で追えない)。面倒な色計算は color-mix に
   // 任せ、地の色(--surface)に薄めていく。
-  // 階調は4段まで: 5番目以降は最薄色に潰れて色では区別できない
+  // 階調は4段まで。5番目以降はすべて最薄色になり、色では区別できない
   const shade = (color, i) => {
     const k = [100, 70, 48, 34][Math.min(i, 3)];
     return k === 100 ? color
@@ -95,7 +95,7 @@
   ];
   const state = { tab: "summary", months: 12, account: "", category: "",
                   search: "", hideTransfer: false,
-                  fOverride: false, fComment: false,   // 明細タブ専用の絞り込み
+                  fOverride: false, fComment: false, fUnmatched: false,   // 明細タブ専用の絞り込み
                   incomeMode: "gross",   // gross=総支給 | net=手取り
                   osc: "cash",           // オシロの既定モード
                   flowMode: "transfer",  // 資金の流れ: transfer=口座間NW | budget=収支サンキー
@@ -221,7 +221,7 @@
     // 含み益の点列(ポートフォリオ取得日ごと)。月末へキャリーフォワードする
     const plHist = (DATA.invest || {}).pl_history || [];
     const out = [];
-    // i < 600(50年)は壊れた日付データでの無限ループ防止の上限
+    // i < 600(50年)は不正な日付データで無限ループしないための上限
     for (let m = lo, i = 0; m <= hi && i < 600; m = shiftMonth(m, 1), i++) {
       const end = m + "-99";
       let assetSum = 0, liab = 0, covered = 0;
@@ -298,6 +298,15 @@
         const v = Math.min(p.pl, sec);
         rows.push({ name: "うち含み益(斜線)", value: fmt(v),
                     pct: pctOf(v, assets) });
+      }
+      // 証券の前月比は評価損益だけでは説明できない(買付・スイープ・受渡の
+      // 時点ずれ)ので、含み損益の変化を並べて「それ以外」を読めるようにする
+      if (prev && (sec || prev.groups.get("証券"))) {
+        const d = sec - (prev.groups.get("証券") || 0);
+        const dpl = (p.pl || 0) - (prev.pl || 0);
+        rows.push({ name: "証券の前月比", value: sfmt(d), cls: d < 0 ? "neg" : "" },
+                  { name: "うち含み損益の変化", value: sfmt(dpl),
+                    cls: dpl < 0 ? "neg" : "" });
       }
     }
     const liabW = [...p.liabs]
@@ -387,7 +396,7 @@
     if (hasOuter && liabW) {
       // 大きい方を96pxとし、小さい方は面積がおおよそ金額比になるよう
       // 直径を√比で縮める。どちらが縮むかは資産・負債の大小で決まる
-      // (負債側だけ縮める方式だと、負債>資産の期間で差が全部潰れる)。
+      // (負債側だけ縮める方式だと、負債>資産の期間で大小の差を表せない)。
       // 読める下限は確保するので目安。正確な額は引き出しラベルと表にある
       const sum = (ws) => ws.reduce((s, w) => s + Math.max(0, w.value), 0);
       const sa = sum(outer), sl = sum(liabW);
@@ -502,43 +511,6 @@
     touchTipHold = tip.style.display !== "none";
   });
 
-  // 給与明細の対外決済日。
-  // 給与清算口座(グループ=給与)の明細は日付情報が「M月分」しかなく
-  // 月初日で計上されている。実質収支を「対外的な収支」として見せるため、
-  // 明細1通(口座+memo)のネット額(支給−控除−DC)と金額が一致する
-  // 同月の資産口座への振込(振替)を探し、その振込日を決済日とする。
-  // 振込が見つからない月(紙通帳の合算行に埋もれた場合など)は明細日付のまま。
-  // schedule.js(資金繰り予測)からも使う共通ユーティリティ。
-  const SETTLE_DATE = (() => {
-    const net = new Map();
-    for (const t of TXNS) {
-      const a = ACCOUNTS[t.account];
-      if (!a || a.group !== "給与" || !t.memo) continue;
-      const k = t.account + "|" + t.memo;
-      net.set(k, (net.get(k) || 0) + t.amount);
-    }
-    const map = new Map();
-    const used = new Set();
-    for (const [k, sum] of net) {
-      const [acct, memo] = k.split("|");
-      // memo は parse_kyuyo(parsers.py)が「給与明細 YYYY-MM」形式で
-      // 付ける規約に依存(支給月の抽出)
-      const m = (memo.match(/\d{4}-\d{2}/) || [])[0];
-      if (!m) continue;
-      const hit = TXNS.find((t) =>
-        t.type === "transfer" && t.counter === acct && t.amount === sum &&
-        t.date.slice(0, 7) === m && !used.has(t.id) &&
-        (ACCOUNTS[t.account] || {}).kind === "asset");
-      if (hit) { used.add(hit.id); map.set(k, hit.date); }
-    }
-    return map;
-  })();
-  const settleDate = (t) => {
-    const a = ACCOUNTS[t.account];
-    if (!a || a.group !== "給与" || !t.memo) return t.date;
-    return SETTLE_DATE.get(t.account + "|" + t.memo) || t.date;
-  };
-
   function niceStep(maxV) {
     const raw = Math.max(1, maxV) / 4;
     const mag = Math.pow(10, Math.floor(Math.log10(raw)));
@@ -610,7 +582,7 @@
                       lines: r.lines || [], error: r.error || "",
                       added: [], removed: [] });
       }
-      // 先頭がrepeatのままの欠け(参照先が埋め込み範囲外)は黙って落とす
+      // 先頭がrepeatのままの欠け(参照先が埋め込み範囲外)は何も表示せずに捨てる
     }
     const notes = (g) =>
       new Set(g.lines.filter((l) => NOTE.has(l.k)).map((l) => l.t));
@@ -620,6 +592,41 @@
       groups[i].removed = [...prev].filter((t) => !cur.has(t));
     }
     return groups.reverse();
+  }
+
+  // 明細表で対応する行(振替ペア・給与明細と手取り振込)を結ぶ線の割り当て。
+  // keys[i] は表のi行目の pair/settle(無ければ空)、hubs[i] はその行が
+  // 一対多の「1」側(手取り振込)か。同じキーの行が表に2行以上あるものを
+  // 区間 [a,b] にし、短い順に重ならない最も内側のレーンへ置く。短い順なので
+  // 入れ子の区間は内側に収まって交差せず、交差は区間が部分的に重なる組
+  // だけに限られる。一対多(1側+多側2行以上)は多側を束ねる線と束から
+  // 1側へ向かう線で2レーンを使う(depth=2)
+  function pairLanes(keys, hubs = []) {
+    const groups = new Map();
+    keys.forEach((k, i) => {
+      if (!k) return;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(i);
+    });
+    const spans = [];
+    for (const [key, rows] of groups) {
+      if (rows.length < 2) continue;
+      const hub = rows.find((i) => hubs[i]);
+      const members = rows.filter((i) => i !== hub);
+      spans.push({ key, rows, hub: hub === undefined ? -1 : hub, members,
+                   depth: hub !== undefined && members.length > 1 ? 2 : 1,
+                   a: rows[0], b: rows[rows.length - 1] });
+    }
+    spans.sort((x, y) => (x.b - x.a) - (y.b - y.a) || x.a - y.a);
+    const lanes = [];
+    const free = (k, s) => (lanes[k] || []).every((o) => o.b < s.a || s.b < o.a);
+    for (const s of spans) {
+      let lane = 0;
+      while (!free(lane, s) || (s.depth === 2 && !free(lane + 1, s))) lane++;
+      for (let d = 0; d < s.depth; d++) (lanes[lane + d] ||= []).push(s);
+      s.lane = lane;
+    }
+    return { spans, lanes: lanes.length };
   }
 
   Object.assign(KB, {
@@ -636,7 +643,6 @@
     isSell, isReinvest, buyCost, sellProceeds,
     watchKey,
     showTip, hideTip,
-    settleDate,
-    niceStep, compact, truncate, mkTile, note, noteLines,
+    niceStep, compact, truncate, mkTile, note, noteLines, pairLanes,
   });
 })();

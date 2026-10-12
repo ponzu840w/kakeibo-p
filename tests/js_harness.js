@@ -46,6 +46,8 @@ KB.state.incomeMode = "gross";
 out.yieldStats = KB.yieldStats(6);
 out.yieldStatsAll = KB.yieldStats();   // 省略時は残高履歴のある全期間
 out.yieldMonthly = KB.yieldMonthly();
+out.nwJul = (({ total, liab, groups }) =>
+  ({ total, liab, sec: groups.get("証券") }))(KB.NW.find((p) => p.month === "2026-07"));
 
 const sal = KB.estimateSalary(TODAY);
 out.estimateSalary = sal && { amount: sal.amount, day: sal.day,
@@ -79,5 +81,11 @@ out.buildLogView = KB.buildLogView([
   { ts: "2026-08-04 10:00:00", ok: false, error: "Traceback..." },
 ]).map((g) => ({ ts: g.ts, tsLast: g.tsLast, count: g.count, ok: g.ok,
                  added: g.added, removed: g.removed }));
+
+// 明細の対応線のレーン割り当て(xは相手が表に無い片側、gは一対多)
+// h は1側が多側の間に挟まる一対多、k は1側+多側1行(ただのペア扱い)
+const PL_KEYS = ["a", "b", "", "b", "a", "c", "x", "c", "d", "e", "d", "e",
+                 "g", "g", "g", "h", "h", "h", "k", "k"];
+out.pairLanes = KB.pairLanes(PL_KEYS, PL_KEYS.map((k, i) => [14, 16, 19].includes(i)));
 
 print(JSON.stringify(out));

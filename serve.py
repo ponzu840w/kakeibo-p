@@ -21,18 +21,20 @@ file:// で site/index.html を開くと閲覧専用(編集フォームは無効
 - POST /api/rebuild   build.py を実行して出力テキストを返す
 
 UIから書けるのは UI所有ファイル2つ(overrides/uistate)と data/inbox/ への
-新規保存だけに限定する。raw/ へは書けない——inbox から raw/ へ移すのは
+新規保存だけに限定する。raw/ へは書けない。inbox から raw/ へ移すのは
 build の organize_inbox(決定論的・移動改名のみ)であり、rules.toml も
 このサーバ経由では触れない。既定では 127.0.0.1 のみで待ち受け、
 Origin付きのクロスオリジンPOSTは拒否する。
 TOMLは丸ごと差し替えなので、書き換え前の版を <name>.bak に残す。
 
-公開運用(手順の詳細は README「公開運用」):
+公開運用(手順の詳細は README「サイト配信運用」):
 - 非ローカルのアクセスは Basic認証(--auth USER:PASS か環境変数
   KAKEIBO_AUTH)が必須。認証が未設定なら 403 で拒否する(fail-closed)。
   「非ローカル」はクライアント単位で判定する: 接続元がループバックでない、
   またはプロキシ経由を示すヘッダ(X-Forwarded-For 等)が付いている
-  リクエスト。同一マシンからの直接アクセスは認証なしで従来どおり使える。
+  リクエスト。同一マシンからの直接アクセスは認証なしで使える。
+  nginx は既定では転送ヘッダを付けないので
+  `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` を明示する。
 - 全データが見えるサーバなので、認証なしの非ループバック待受は
   そもそも起動を拒否する。
 - TLSは持たない。インターネットに出すときは必ずHTTPS終端する
@@ -41,7 +43,7 @@ TOMLは丸ごと差し替えなので、書き換え前の版を <name>.bak に�
   (平文HTTPでの公開はパスワードも明細も漏れる)。
 - クロスオリジン判定は Host ヘッダとの突合なので、プロキシ配下の
   独自ドメインでも編集機能はそのまま動く(プロキシは Host を
-  素通しすること。Caddy は既定でそうなる。nginx は
+  そのまま転送すること。Caddy は既定でそうなる。nginx は
   `proxy_set_header Host $host;`)。
 """
 from __future__ import annotations
@@ -100,7 +102,7 @@ class Handler(SimpleHTTPRequestHandler):
         リクエストは接続元こそ 127.0.0.1 だが、プロキシが付ける転送ヘッダで
         見分けて非ローカル扱いにする(公開経路に認証を必ず通すため)。
         ローカルの直接アクセスが転送ヘッダを自称しても認証を求められる
-        だけなので、偽装は安全側にしか倒れない。
+        だけなので、偽装されても安全側の結果にしかならない。
         """
         if self.client_address[0] not in ("127.0.0.1", "::1"):
             return False
@@ -110,7 +112,7 @@ class Handler(SimpleHTTPRequestHandler):
     def _check_auth(self) -> bool:
         """非ローカルのアクセスにBasic認証を課す。
 
-        ローカル(同一マシンの直接アクセス)は素通し。非ローカルは認証必須で、
+        ローカル(同一マシンの直接アクセス)は認証なしで通す。非ローカルは認証必須で、
         認証が未設定なら拒否(fail-closed)。不合格なら応答済みで False。
         """
         if self._is_local_client():
@@ -157,7 +159,7 @@ class Handler(SimpleHTTPRequestHandler):
         # クロスオリジンPOST(CORSなしでも届いてしまう)は拒否する。
         # Basic認証はブラウザが保存して自動送信するため、公開運用でも
         # この検査がCSRFの防壁になる。待受アドレスと比べる方式だと
-        # 逆プロキシ+独自ドメイン配下で編集が全滅するので、ブラウザが
+        # 逆プロキシ+独自ドメイン配下で編集がすべて拒否されるので、ブラウザが
         # 実際に接続した先を表す Host ヘッダと突合する
         origin = self.headers.get("Origin")
         if origin and urlsplit(origin).netloc != self.headers.get("Host"):
@@ -172,7 +174,7 @@ class Handler(SimpleHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(n)
         try:
-            tomllib.loads(body.decode("utf-8"))   # 壊れたTOMLを書き込まない
+            tomllib.loads(body.decode("utf-8"))   # 構文が不正なTOMLを書き込まない
         except (UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
             self._send(400, f"TOMLが不正なため保存しません: {e}")
             return None
@@ -188,7 +190,7 @@ class Handler(SimpleHTTPRequestHandler):
         if backup and path.exists():
             path.with_name(path.name + ".bak").write_bytes(path.read_bytes())
         # 一時ファイル名は書込ごとに一意にする。拡張子置換(.tmp)だと
-        # foo.csv と foo.html の同時投入で同じ foo.tmp を奪い合う
+        # foo.csv と foo.html の同時投入で同じ foo.tmp に書き込んで衝突する
         tmp = path.with_name(
             f"{path.name}.part-{os.getpid()}-{threading.get_ident()}")
         tmp.write_bytes(body)

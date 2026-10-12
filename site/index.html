@@ -49,7 +49,7 @@
     </label>
   </div>
 
-  <!-- 情報鮮度モニタ: 取込サボりの検知はこのシステムの生命線 -->
+  <!-- 情報鮮度モニタ: 取込が滞っていないかの検知は、このシステムで最も重要な機能 -->
   <details class="card warn-card" id="warnings-card" style="display:none">
     <summary><span id="warn-summary"></span><span class="chev">▼</span></summary>
     <div class="warn-list" id="warnings"></div>
@@ -68,6 +68,10 @@
       <label class="switch-label" title="コメントを付けた明細だけ表示">
         <span>コメントあり</span>
         <span class="switch"><input type="checkbox" id="f-comment"><i></i></span>
+      </label>
+      <label class="switch-label" title="相手側の明細と突き合わせできていない振替だけ表示(カード引落など、相手側の明細を取り込まない口座の振替も含む)">
+        <span>未突合振替</span>
+        <span class="switch"><input type="checkbox" id="f-unmatched"><i></i></span>
       </label>
     </span>
   </div>
@@ -116,8 +120,8 @@
       <div id="as-comp"></div>
     </div>
 
-    <!-- 純資産の推移とリスク評価は横並び。行の高さは長い方(通常リスク評価)が
-         決め、純資産チャートは余った縦に合わせて伸びる(tab-assets fitNetWorth) -->
+    <!-- 純資産の推移とリスク評価は横並び。行の高さは長いほう(通常はリスク評価)で
+         決まり、純資産チャートは残りの高さに合わせて伸びる(tab-assets fitNetWorth) -->
     <div class="chart-grid" style="margin-bottom:16px">
       <div class="card" id="networth-card" style="margin-bottom:0">
         <h2>純資産の推移</h2>
@@ -130,6 +134,19 @@
              style="margin:12px 0 0;grid-template-columns:1fr"></div>
         <div class="count-note">資産応答%は総資産比</div>
       </div>
+    </div>
+
+    <!-- 純資産推移の月をクリックすると開く。前月の点からの変化をグループ別に
+         橋渡しし、証券・年金は評価損益と元本(拠出)まで分解する -->
+    <div class="card" id="nw-delta-card" hidden>
+      <div class="modal-head" style="margin-bottom:4px">
+        <h2 id="nw-delta-title">資産増減内訳</h2>
+        <button class="close" id="nw-delta-close">✕</button>
+      </div>
+      <div class="chart-scroll" id="nw-delta-chart"></div>
+      <h2 id="nw-delta-sub" style="margin:12px 0 4px">詳細内訳</h2>
+      <div class="tbl-scroll" id="nw-delta-table"></div>
+      <div class="count-note" id="nw-delta-note"></div>
     </div>
 
     <div class="card" id="yield-card">
@@ -195,6 +212,7 @@
     <div class="card" id="dc-card" hidden>
       <h2>企業型DCの内訳</h2>
       <div class="kpis" id="dc-kpis"></div>
+      <div id="dc-alloc" style="margin-top:12px"></div>
       <div class="count-note" id="dc-note"></div>
     </div>
 
@@ -252,8 +270,8 @@
           <button data-m="cash">口座収支</button>
           <button data-m="flow">実質収支</button>
         </span>
-        <span>濃いほど新しい月・当月は前景色の太線。月初=0。
-          薄い帯=過去月の25〜75%レンジ(破線=中央値)</span>
+        <span>濃い線ほど新しい月で、当月は前景色の太線。月初を0とする。
+          薄い帯は過去月の25〜75%の範囲(破線は中央値)</span>
       </div>
       <div class="chart-scroll" id="osc-chart"></div>
       <div class="count-note" id="osc-note"></div>
@@ -312,7 +330,7 @@
           <tbody></tbody>
         </table>
       </div>
-      <div class="count-note">rules.toml の [[recurring]] 宣言に一致した支出を集計。月額換算は直近3出現月の中央値（年払いは直近支払額÷12）。薄い行は直近の支払いなし
+      <div class="count-note">rules.toml の [[recurring]] 宣言に一致した支出を集計。月額換算は直近3出現月の中央値(年払いは直近支払額÷12)。薄い行は直近の支払いなし
       </div>
     </div>
 
@@ -353,7 +371,7 @@
           <tbody></tbody>
         </table>
       </div>
-      <div class="count-note">3ヶ月分を表示(薄い行はチャート外)。"定期検出"=過去の出現から推定。"確定"=カード請求の確定額。"給与"=直近の月給の振込日と金額の中央値。</div>
+      <div class="count-note">3ヶ月分を表示(薄い行はチャート外)。「定期検出」は過去の出現からの推定、「確定」はカード請求の確定額、「給与」は直近の月給の振込日と金額の中央値。</div>
     </div>
 
     <!-- ---- 資産形成(長期。年単位、貯蓄ペースと運用利回りベース) ---- -->
@@ -381,7 +399,7 @@
       <div class="card-head">
         <h2>条件設定</h2>
         <span class="switch-label"
-              title="スライダーの初期値・▲マーカーの元にする実績の期間。自動=現在の給与体制が始まった月以降(就労前の無収入月で平均が沈まないようにする)">
+              title="スライダーの初期値・▲マーカーの元にする実績の期間。自動=現在の給与体制が始まった月以降(就労前の無収入月で平均が下がらないようにする)">
           <span>実績の参照期間</span>
           <span class="seg small" id="lt-base">
             <button data-b="auto" class="on">自動</button>
@@ -422,7 +440,7 @@
       <div class="count-note">長期予測にだけ反映(資金繰り予測は実データのまま)。貯蓄・投資の初期値は
         実績(参照期間の月平均)に追従し、スライダーを動かすと固定値になる。▲=いま選んでいる参照期間の
         実績(クリックで実績追従に戻す)。投資率は内部では月額で保持され、貯蓄額を動かすと率でなく額を
-        維持する(貯蓄額を超えることはない)。「解約」は貯蓄に上乗せ。</div>
+        維持する(貯蓄額を超えることはない)。「解約」した定期支出の額は貯蓄に上乗せする。</div>
     </div>
   </div>
 
@@ -471,8 +489,8 @@
         </div>
       </div>
       <div class="count-note">
-        N月発行の給与明細には、N-1月次の勤怠が記録されている。このズレを補正し、勤怠・休暇・単価は行われた月のデータとして表示。<br>
-        「付与」を含む項目（有給付与日数等）のみ例外的に発行月をそのまま付与月として計上（給与と同様）。
+        N月発行の給与明細には、N-1月の勤怠が記録されている。勤怠・休暇・単価はこのずれを補正し、実際に勤務した月のデータとして表示する。<br>
+        「付与」を含む項目(有給付与日数等)だけは例外で、給与と同じく発行月を付与月として計上する。
       </div>
     </div>
   </div>
@@ -510,9 +528,9 @@
     </details>
     <div class="card">
       <h2>明細</h2>
-      <div class="tbl-scroll">
+      <div class="tbl-scroll pair-wrap">
         <table id="txn-table">
-          <thead><tr><th>日付</th><th>口座</th><th>摘要</th><th>カテゴリ</th><th style="text-align:right">金額</th></tr></thead>
+          <thead><tr><th>日付</th><th>口座</th><th>摘要</th><th>カテゴリ</th><th style="text-align:right">金額</th><th class="pair-col"></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>

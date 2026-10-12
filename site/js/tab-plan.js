@@ -22,7 +22,7 @@
   // 貯蓄・投資は「追従(null)か固定値か」の2状態。スライダーを動かすと
   // 固定になり、▲(実績マーカー)のクリックで追従に戻す。
   // 借入返済スライダーの初期値(index.html の value と揃える)。未保存のとき
-  // だけ効き、ユーザーが明示的に0(=返済しない)にした場合はその0を尊重する
+  // だけ使い、ユーザーが明示的に0(=返済しない)にした場合はその0を尊重する
   const DEFAULT_LOAN_REPAY = 4000;
   const whatif = { drop: new Set(), saving: null, invest: null,
                    loanRepay: DEFAULT_LOAN_REPAY };
@@ -49,7 +49,7 @@
   }
 
   // 予測の起点にする口座(銀行グループ・資産・残高アンカーあり)。
-  // 給与振込もカード引落もここへ落ちるため、この合算残高が
+  // 給与振込もカード引落もこの口座を通るため、この合算残高が
   // 「当面の支払いに足りるか」を最もよく表す。
   function bankAnchors() {
     const out = [];
@@ -89,7 +89,7 @@
     // 表(renderCfEvents)は3ヶ月分全部を出し、期間外を薄表示する
     const tableMonths = Math.max(3, horizon);
     // 資金繰りは実際の残高予測なので What-if(解約等)を混ぜない。
-    // 仮定は長期予測(renderLongterm)にだけ効かせる
+    // 仮定は長期予測(renderLongterm)にだけ反映する
     const { events: allEvents, salary, baseline } = futureEvents({
       horizonMonths: tableMonths, today });
     const startTotal = banks.reduce((s, b) => s + b.start, 0);
@@ -104,8 +104,8 @@
       dayList.push(iso);
       if (iso >= end) break;
     }
-    // 銀行口座に効くイベントだけを日付→差分に畳む(Suica等の定期は
-    // 銀行残高に直接は響かないので除外され、二重計上を避ける)
+    // 銀行口座に影響するイベントだけを日付→差分に畳む(Suica等の定期は
+    // 銀行残高に直接は影響しないので除外され、二重計上を避ける)
     const bankIds = new Set(banks.map((b) => b.id));
     const bankEvents = events.filter((e) => bankIds.has(e.account));
     const deltaByDay = new Map();
@@ -160,7 +160,7 @@
         if (cb.checked) whatif.drop.add(s.name); else whatif.drop.delete(s.name);
         row.classList.toggle("dropped", cb.checked);
         saveWhatif();
-        // 解約は長期予測(貯蓄への上乗せ)にだけ効く
+        // 解約は長期予測(貯蓄への上乗せ)にだけ反映される
         syncWhatifSliders();
         renderLongterm();
       });
@@ -259,7 +259,7 @@
       }
     }
     // 日付の縦目盛り(月初と今日)。初日は日付を書かず「今日」だけにする
-    // (同じ座標への重ね書きでラベルが潰れるため)
+    // (同じ座標への重ね書きでラベルが重なって読めないため)
     let lastMonth = "";
     series.forEach((p, i) => {
       const m = p.date.slice(0, 7);
@@ -388,11 +388,11 @@
   // 月利で複利成長させ、利回りシナリオ(悲観0%/中立3%/楽観5%)で帯を描く。
   function projectionInputs() {
     // 月次フローは「基準期間の完了月の平均(合計÷月数)」を使う。収入が
-    // 給与月にまとまって入る家計では中央値は低収入月に張り付き累積を
+    // 給与月にまとまって入る家計では中央値が低収入月の値に近くなり、累積を
     // 過小評価するため、実際の資産形成ペースを表す平均を採る。
     // 基準期間(#lt-base): 自動=「現在の給与体制」の開始月以降の完了月
     // (最大12)。単なる初任給以降だと昔の単発バイト月まで含んで就職前の
-    // 低収入月に平均が沈むため、直近から途切れず連続している給与月の
+    // 低収入月で平均が下がるため、直近から途切れず連続している給与月の
     // 先頭を体制の開始とみなす。3・6・12=直近nヶ月固定。
     const MT = monthlyTotals(TXNS);
     const completed = months.filter((m) => m < curMonth);
@@ -710,7 +710,7 @@
     }
     // ホバー: 実績側は推移チャートと同じ素材(nwTip)、予測側はシナリオ+
     // 中立の内訳を同じ文法(ドーナツペア+セクション見出し付きの表)で。
-    // ヒット領域は推移チャートと同じ月バンド分割。プロット全面の1枚岩に
+    // ヒット領域は推移チャートと同じ月バンド分割。プロット全面を1枚の領域に
     // すると、共通のホバー縁取り(svgkit hlMark)がヒット矩形の横幅に
     // クリップする仕組み上「その月」に絞れず面が全期間縁取りされてしまう
     const liabRank = nwLiabRank(hist);

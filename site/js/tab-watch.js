@@ -55,7 +55,7 @@
     }
 
     // 描画より先にモーダルを表示する(display:none の間は scrollWidth=0 で
-    // 「最新月へスクロール」が効かず、最古側が見えた状態で開いてしまう)
+    // 「最新月へスクロール」ができず、最古側が見えた状態で開いてしまう)
     $("#watch-bg").style.display = "";
     drawWatchChart(byMonth);
     // 直近明細

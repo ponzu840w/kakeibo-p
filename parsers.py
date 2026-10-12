@@ -101,7 +101,7 @@ def sniff_format(path: Path) -> str | None:
     if head.startswith("日付,口座,残高"):
         return "manual_balances"
     # SBI証券「My資産」の資産推移CSV: ヘッダなし「YYYY/M/D,評価額」の2列のみ。
-    # 匿名な形式なので、先頭2行がともに一致することまで確認する。同形式の
+    # 特徴のない形式なので、先頭2行がともに一致することまで確認する。同形式の
     # 2列CSVを他ソースで扱うことになったら判別を見直すこと
     lines = [l.strip() for l in head.splitlines() if l.strip()]
     if (len(lines) >= 2 and
@@ -185,6 +185,11 @@ def parse_yucho_csv(path: Path) -> tuple[list[Txn], dict]:
     """ゆうちょダイレクト入出金明細CSV。CP932・古い順・残高列あり。
 
     ヘッダ部の「出力日時:令和 NN 年 MM 月 DD 日 …」がDL日(取込日として申告)。
+
+    利息の入金は「受取利子(税引後・残高あり)」の行の直後に、「利子」「税金」の
+    内訳行が残高空欄で続く(実例 2026-10-01: 604 = 756 − 152)。内訳行も取り込むと
+    二重計上になるので、取り込まずに直前行のmemoへ残す。残高空欄の行が続いても、
+    その合計が直前行の金額と一致しなければ内訳と断定できないので、通常どおり取り込む。
     """
     src = str(path.relative_to(ROOT))
     text = read_text(path)
@@ -213,11 +218,32 @@ def parse_yucho_csv(path: Path) -> tuple[list[Txn], dict]:
             native_id=native_id.strip(),
             balance=parse_amount(bal_s),
         ))
+    txns = _fold_yucho_breakdown(txns)
     m = re.search(r"出力日時[:：]\s*令和\s*(\d+)\s*年\s*(\d+)\s*月"
                   r"\s*(\d+)\s*日", text)
     meta = _fetched("yucho", f"{2018 + int(m.group(1))}-{int(m.group(2)):02d}-"
                     f"{int(m.group(3)):02d}") if m else {}
     return txns, meta
+
+
+def _fold_yucho_breakdown(txns: list[Txn]) -> list[Txn]:
+    out: list[Txn] = []
+    i = 0
+    while i < len(txns):
+        t = txns[i]
+        out.append(t)
+        j = i + 1
+        while j < len(txns) and txns[j].balance is None:
+            j += 1
+        run = txns[i + 1:j]
+        if (run and t.balance is not None
+                and sum(r.amount for r in run) == t.amount):
+            t.memo = "内訳: " + " / ".join(
+                f"{r.raw_description} {r.amount:+,}" for r in run)
+            i = j
+        else:
+            i += 1
+    return out
 
 
 class _YuchoHtmlTable(HTMLParser):
@@ -533,7 +559,7 @@ def parse_neobank_csv(path: Path) -> tuple[list[Txn], dict]:
     (実例: 解約時の未払利子 9円が摘要「ＳＢＩハイブリッド預金」で
     代表口座に入金された)。
     DL時の既定ファイル名 nyushukinmeisai_YYYYMMDD.csv の日付がDL日
-    (取込日として申告。リネームされていれば黙って無し扱い)。
+    (取込日として申告。リネームされていれば警告を出さずに取込日なしとして扱う)。
     """
     src = str(path.relative_to(ROOT))
     rows = list(csv.reader(io.StringIO(read_text(path))))
@@ -568,11 +594,12 @@ def parse_shinsei_csv(path: Path) -> tuple[list[Txn], dict]:
     この口座の用途はSBIハイパー預金(SBI証券との連動預金。2026-08に
     SBIハイブリッド預金から移行)のみのため、sbi_shinsei 口座として取り込む。
     スイープは摘要「SBI証券精算」で rules.toml の振替ルールが捕捉する。
-    SBI証券の円貨入出金明細側に対応行が出るかは未確認(スィープ専用銀行口座
-    明細表示「あり」のDLを見てから対の振替ルールを判断する)。
+    SBI証券の円貨入出金明細側にも対応行(「SBIハイパー預金へ/より自動振替」)が
+    出るが、「スィープ専用銀行口座 明細表示」を付けてDLしたときだけ。
+    こちらの明細が正で、証券側の行はあってもなくてもよい。
     取引日には未来日(受渡予定)が入ることがある。そのまま取り込む。
     DL既定ファイル名 JPY_HY_YYYYMMDDhhmmss.csv の日付がDL日(取込日として
-    申告。リネームされていれば黙って無し扱い)。
+    申告。リネームされていれば警告を出さずに取込日なしとして扱う)。
     """
     src = str(path.relative_to(ROOT))
     rows = list(csv.reader(io.StringIO(read_text(path))))
@@ -644,11 +671,21 @@ def parse_paypal_csv(path: Path) -> tuple[list[Txn], dict]:
 _PAIDY_ROW = re.compile(
     r"(\d+回あと払い支払額|お支払い受領|\d+月分の支払い)\s+"
     r"(\d{4}/\d{2}/\d{2})\s+(-?[\d,]+)\s*円(?:\s+(\d+回目/\d+回あと払い))?")
-# 分割プラン詳細(モーダル)。「分割あと払い（未確定）」見出し→購入店舗→
-# 購入日→ご注文番号→商品明細→合計、の並びをテキスト化した流れで拾う
+# 分割プラン詳細(モーダル)。見出し→購入店舗→購入日→ご注文番号→商品明細
+# →合計、の並びをテキスト化した流れで拾う。見出しは2026-07時点で
+# 「分割あと払い（未確定）」、2026-09以降の保存では「一括払い」
 _PAIDY_PLAN = re.compile(
-    r"分割あと払い(?:（[^）]*）)?\s+(.+?)\s+購入日 (\d{4}/\d{2}/\d{2})\s+"
+    r"(?:分割あと払い(?:（[^）]*）)?|一括払い)\s+(.{1,80}?)\s+"
+    r"購入日 (\d{4}/\d{2}/\d{2})\s+"
     r"ご注文番号 (\S+)\s+(.+?)\s+合計 ([\d,]+)\s*円")
+# 通常あと払い(Apple以外)の購入一覧。各購入は1つのbuttonに収まり、
+# 中身は「店舗 購入日 金額 円 N回あと払い」。2026-10時点のtestidは
+# uncaptured-payments-item-N(「未確定」見出しの下)。見出しはbuttonの外
+_PAIDY_ITEM = re.compile(
+    r'<button[^>]*data-testid="?[^" >]*payments-item-\d+[^>]*>(.*?)</button>',
+    re.S)
+_PAIDY_ITEM_TEXT = re.compile(
+    r"(.+?)\s+(\d{4}/\d{2}/\d{2})\s+([\d,]+)\s*円\s+(\d+回あと払い)")
 _SINGLEFILE_DATE = re.compile(
     r"saved date: \w{3} (\w{3}) (\d{1,2}) (\d{4})")
 _MONTHS_EN = {m: i + 1 for i, m in enumerate(
@@ -681,7 +718,7 @@ def _fetched(account: str, date_iso: str) -> dict:
 
 def _fetched_from_name(account: str, pattern: str, path: Path) -> dict:
     """DL既定ファイル名の (YYYY)(MM)(DD) 3群から取込日メタを作る。
-    リネームされていれば黙って無し扱い。"""
+    リネームされていれば警告を出さずに取込日なしとして扱う。"""
     m = re.match(pattern, path.name)
     return (_fetched(account, f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
             if m else {})
@@ -710,8 +747,12 @@ def parse_paidy_html(path: Path) -> tuple[list[Txn], dict]:
       購入日に一括計上する(カード類と同じ利用時計上)。ご注文番号を
       native_id にするので、詳細が写った保存が raw/ に1枚あれば、以後の
       保存に写らなくても購入行は安定して再生成される。
-      **新しい分割プランを組んだら、プラン詳細を開いた状態で保存する**
+      **Apple専用プランを組んだら、プラン詳細を開いた状態で保存する**
       (下記のとおり支払額行は取引にしないため、詳細が無いと支出が欠ける)。
+    - 通常あと払い(Apple以外)の購入一覧の行 = 購入の支出を購入日に一括
+      計上する。ご注文番号が無いので内容キー(日付・金額・店舗)で冪等。
+      同じ購入のプラン詳細が同じ保存に写っていても一覧側を正とする
+      (詳細の有無で保存ごとに照合キーが変わると二重計上になるため)。
     - 「N回あと払い支払額」= 月次の請求確定の情報行。購入時に全額計上済み
       のため取引にしない(取ると二重計上になる)。
     - 「N月分の支払い」= 口座振替(ゆうちょ側と突合する振替)。
@@ -755,9 +796,30 @@ def parse_paidy_html(path: Path) -> tuple[list[Txn], dict]:
         source=src,
         memo=m.group(4) or "",
     ) for m in _PAIDY_ROW.finditer(text) if "月分の支払い" in m.group(1)]
+    items_total = 0
+    listed = set()
+    for b in _PAIDY_ITEM.finditer(html):
+        m = _PAIDY_ITEM_TEXT.fullmatch(_html_text(b.group(1)).strip())
+        if not m:
+            continue
+        store, day, total, plan = m.groups()
+        amount = int(total.replace(",", ""))
+        items_total += amount
+        listed.add((day, amount))
+        txns.append(Txn(
+            account="paidy",
+            date=day.replace("/", "-"),
+            amount=-amount,
+            description=normalize_text(store),
+            raw_description=store,
+            source=src,
+            memo=plan,
+        ))
     # 分割プラン詳細から購入を購入日に一括計上(ご注文番号で冪等)
     for m in _PAIDY_PLAN.finditer(text):
         store, day, order_no, items, total = m.groups()
+        if (day, int(total.replace(",", ""))) in listed:
+            continue
         txns.append(Txn(
             account="paidy",
             date=day.replace("/", "-"),
@@ -775,12 +837,12 @@ def parse_paidy_html(path: Path) -> tuple[list[Txn], dict]:
             "date": snap_date, "account": "paidy",
             "balance": -debt, "memo": "", "note": "残債" if debt else "完済",
         }], "source": src}
-    if non_apple:
-        # 通常あと払い(店舗利用)の行型は実例が無く未実装。残債だけ立って
-        # 明細行が落ちると支出が黙って欠けるため、ビルド時に警告する
-        meta["warnings"] = ["ご利用総額(Apple以外)が" f"{non_apple:,}円。"
-                            "通常あと払いの行型は未実装のため明細行が"
-                            "落ちている可能性(パーサ要確認)"]
+    if non_apple > items_total:
+        # 残債は購入一覧の合計を超えない。超えたら未知の行型(翌月一括払い、
+        # 確定後の一覧の形式変化等)で購入が落ちており、支出が気づかないうちに欠ける
+        meta["warnings"] = ["ご利用総額(Apple以外)が" f"{non_apple:,}円で、"
+                            f"拾えた購入の合計{items_total:,}円を超える。"
+                            "未知の行型で購入が落ちている可能性(パーサ要確認)"]
     return txns, meta
 
 
@@ -824,7 +886,7 @@ def parse_paypay(path: Path) -> tuple[list[Txn], dict]:
         dt = (row.get("取引日") or "").strip()
         date_iso = dt[:10].replace("/", "-")
         # 取引番号が空の行に ":支払い" のような擬似IDを与えると別取引同士が
-        # 同一視されて潰れるため、空なら汎用キー(dedupのフォールバック)に任せる
+        # 同一視されて1件にまとめられてしまうため、空なら汎用キー(dedupのフォールバック)に任せる
         bango = (row.get("取引番号") or "").strip()
         txns.append(Txn(
             account="paypay",
@@ -957,7 +1019,7 @@ def parse_sbi_value_history(path: Path) -> tuple[list[Txn], dict]:
     (sbi_portfolio)の保存を始める前の過去の評価額推移を埋めるための
     ソース(取引は無い)。各点をスナップショット形(total_value のみ、
     銘柄・損益なし)で返し、build が snapshots に合流させることで
-    残高アンカーと invest.value_history(評価額推移チャート)の両方に効く。
+    残高アンカーと invest.value_history(評価額推移チャート)の両方に反映される。
     損益(total_pl)は無いので pl_history(含み益ストライプ)には現れない。
 
     注意: 数字は「投資商品のみ」の評価額であること(ポートフォリオCSVと
@@ -979,7 +1041,7 @@ def parse_sbi_value_history(path: Path) -> tuple[list[Txn], dict]:
             "total_value": val,
             "note": "評価額(資産推移CSV)",
             # 最新スナップショットが万一この点になっても保有銘柄表が
-            # 壊れないよう空を明示する(通常はポートフォリオCSVの方が新しい)
+            # おかしくならないよう空を明示する(通常はポートフォリオCSVの方が新しい)
             "holdings": [],
             "source": src,
         })
@@ -1003,9 +1065,14 @@ def parse_sbi_trades(path: Path) -> tuple[list[Txn], dict]:
             continue
         action = row[4].strip()
         amount = _num(row[13])
+        settle = row[12].strip()
         events.append({
             "kind": "trade",
             "date": row[0].replace("/", "-"),
+            # 受渡日。約定日〜受渡日の買付は評価額(約定日ベース)とスイープ
+            # 預金(受渡日ベース)に二重に載るので、build が「未受渡」に合成して相殺する
+            **({"settle": settle.replace("/", "-")}
+               if re.match(r"^\d{4}/\d{2}/\d{2}$", settle) else {}),
             "name": normalize_text(row[1]),
             "code": row[2].strip(),
             "action": action,
@@ -1089,9 +1156,9 @@ def _pdf_text_pages(data: bytes) -> list[list[tuple[float, float, str]]]:
 
     帳票系PDF向けの最小実装。テキスト配置が `1 0 0 1 x y Tm` の絶対指定で、
     文字列は2通り(SBI帳票の世代差):
-    - リテラル `(...)Tj` — UTF-16BE(CIDのUniJIS-UCS2系。月次報告書)
-    - 16進 `<...>Tj` — Shift-JIS(90ms-RKSJ系。年次報告書)
-    前提から外れるストリームは黙って読み飛ばす(=空)。
+    - リテラル `(...)Tj`: UTF-16BE(CIDのUniJIS-UCS2系。月次報告書)
+    - 16進 `<...>Tj`: Shift-JIS(90ms-RKSJ系。年次報告書)
+    前提から外れるストリームは警告を出さずに読み飛ばす(=空)。
     """
     pages: list[list[tuple[float, float, str]]] = []
     for raw in re.findall(rb"stream\r?\n(.*?)endstream", data, re.S):
@@ -1307,7 +1374,7 @@ def parse_manual_balances(path: Path) -> tuple[list[Txn], dict]:
 # ---- デモソース ----
 # 実在しない架空フォーマット。給与明細やDCポータルのような「勤務先系」
 # ソースをこのシステムでどう扱うかの実装例で、デモデータ生成
-# (demo/make_demo_data.py)にも使う。実在サービスのパーサを書くときの
+# (demo/build_demo.py)にも使う。実在サービスのパーサを書くときの
 # 雛形として、清算口座(kyuyo)型と残高アンカー(balances)型の両方を示す。
 
 def parse_demo_kyuyo(path: Path) -> tuple[list[Txn], dict]:
@@ -1453,7 +1520,7 @@ PARSERS = {
 
 # ---- ローカル拡張の読み込み ----
 # parsers_extra.py(あれば)が register() で PARSERS・sniff・FORMAT_DIR を拡張する。
-# PARSERS 定義後でないと register() が効かないため、必ずこの位置で import する。
+# PARSERS 定義後でないと register() で登録できないため、必ずこの位置で import する。
 try:
     import parsers_extra  # noqa: F401  (import時に登録が走る)
 except ModuleNotFoundError as e:

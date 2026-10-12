@@ -648,7 +648,7 @@ def main(argv=None) -> int:
     if r.returncode != 0:
         return r.returncode
     # data.js(実データ)があるときはそちらを使わせる。const だと再宣言エラーに
-    # なるため、未定義のときだけ効くグローバル代入に書き換える。
+    # なるため、未定義のときだけ代入するグローバル代入に書き換える。
     # ビルド実行ログは実行時刻メタデータなのでデモには埋め込まない
     js = out.read_text(encoding="utf-8")
     body = js.removeprefix("const DATA = ").rstrip().removesuffix(";")

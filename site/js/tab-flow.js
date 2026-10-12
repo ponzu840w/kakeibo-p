@@ -6,10 +6,10 @@
   const {
     $, TXNS, ACCOUNTS, CAT_GROUPS, state, curMonth, months,
     effective, monthlyTotals, periodMonths, shiftMonth, daysOf,
-    catGroup, settleDate,
+    catGroup,
     fmt, sfmt, compact, truncate, cssVar, niceStep, note,
     showTip, hideTip,
-    mkSvg, SVGNS, line, rect, text, vbar, stackGroup, hbarPath, polyline, circle,
+    mkSvg, SVGNS, line, rect, text, vbar, stackGroup, segRect, hbarPath, polyline, circle,
     svgDefs, nextSvgSeq, areaBand,
     yAxis, legendKey, monthlyChart, nowBand,
     median,
@@ -45,7 +45,7 @@
     const { svg, y, band, plotH } = mc;
     const barW = Math.min(24, (band - 16) / 2 - 1);
     // 収支線は資産タブの純資産線と同じ --ink(黒/白)。「正味」の線という
-    // 意味論をそろえ、収入シアン・支出オレンジのどちらにも寄らない
+    // 意味論をそろえ、収入シアン・支出オレンジのどちらの色にも近づけない
     const inc = cssVar("--income"), exp = cssVar("--expense"), net = cssVar("--ink");
     ms.forEach((m, i) => {
       const a = agg.get(m);
@@ -161,9 +161,9 @@
   // 月内の資金推移(オシロスコープ重ね描き)
   // 各月を「月初=0」からの累積曲線として同じ日軸(1〜31日)に重ねる。
   // cash: 資産口座(給与清算除く)の入出金の累積。振替・引落・給料日を含む
-  //       ので「どこで入金され、どこで落ちるか」の波形が見える。
+  //       ので「どこで入金され、どこで引き落とされるか」の波形が見える。
   // flow: 収入−支出の累積(振替除く・収入モード反映)。発生ベースではなく
-  //       対外決済ベース: 給与明細(月初日付)は振込日に置き直して累積する。
+  //       給与明細は build が振込日に置き直している(settle_salary_dates)。
   function oscilloSeries(ms, txns, mode) {
     const series = new Map(ms.map((m) => [m, new Array(32).fill(0)]));
     // 月×日ごとの内訳(ツールチップの変化要因表示用)
@@ -180,7 +180,6 @@
         const e = effective(t);
         if (e.type === "income" || e.type === "expense") {
           amt = e.amount;
-          day = settleDate(t);
         }
       }
       if (amt == null) continue;
@@ -231,7 +230,7 @@
     for (const d of [1, 5, 10, 15, 20, 25, 31]) {
       text(svg, x(d), H - 8, d + "日", "axis-label", "middle");
     }
-    // 過去月の中央値バンド: 日ごとの累積を過去月で分位に潰して薄く敷く。
+    // 過去月の中央値バンド: 日ごとの累積を過去月の分位点にまとめ、薄い帯で描く。
     // 当月の線がこの帯から上下どちらに外れているかで、いつもの月と比べた
     // ペースの速さが読める。月ごとの日数差があるので日単位で母数を数える
     const pastMs = ms.filter((m) => m !== curMonth);
@@ -327,7 +326,7 @@
   const catGroupColor = (g) => {
     const i = TREND_SLOTS.indexOf(g);
     // 色スロットは --cat1〜9 の9個。中分類がそれを超えた分は透明になる
-    // 事故を防ぐため「その他」色に落とす(build も9個超で警告する)
+    // 事故を防ぐため「その他」色にする(build も9個超で警告する)
     return i < 0 || i >= 9 ? cssVar("--cat-other") : cssVar("--cat" + (i + 1));
   };
 
@@ -366,8 +365,8 @@
       const bar = stackGroup(svg, bx, y(0), barW, y(0) - y(total));
       nonzero.forEach((c) => {
         const v = a.get(c);
-        rect(bar, bx, y(cum + v), barW, Math.max(1, y(cum) - y(cum + v)),
-             catColor(c));
+        segRect(bar, bx, y(cum + v), barW, Math.max(1, y(cum) - y(cum + v)),
+                catColor(c), "up");
         cum += v;
       });
       if (cum > 0) text(svg, bx + barW / 2, y(cum) - 3, compact(cum),
@@ -561,7 +560,7 @@
           leaf.addEventListener("click", (e2) => {
             e2.stopPropagation();
             // jumpToTxn 経由で飛ぶ(フィルタが立っていると対象行が明細表に
-            // 現れずフォーカスが黙って失われるため、邪魔な条件を外して飛ぶ)
+            // 現れずフォーカスが知らないうちに失われるため、邪魔な条件を外して飛ぶ)
             jumpToTxn(t);
           });
           leaves.appendChild(leaf);
@@ -709,14 +708,14 @@
   }
 
   // 収支: 定期支出の履歴(月次積み上げエリア)
-  // 現金主義: 支払った月に計上し、未払月は0(帯が潰れる)。年払いの尖塔も
+  // 現金主義: 支払った月に計上し、未払月は0(帯の高さが0になる)。年払いで突出する月も
   // クレジット消化中の0期間も、財布から出た事実のまま描く(按分しない)。
   // 積み上げ順は出現月数の多い長寿系列が下(ベースロード)、変動の激しい
-  // 新参が上澄みに乗る。色は宣言の定義順に --cat1〜9 の固定割当
+  // 新しい系列が上に乗る。色は宣言の定義順に --cat1〜9 の固定割当
   // (表示順・件数から導かない。中分類色と同じ流儀)。10本目以降は「その他」。
 
   // 凡例クリックで一時的に隠している系列(キー=系列名、合算帯は「その他」)。
-  // 1系列だけ桁違いに大きいと他が縦軸ごと潰れるため、外して残りを読む用。
+  // 1系列だけ桁違いに大きいと他の系列が縦に縮んで読めないため、外して残りを読む用。
   // 描画セッション限り(uistate に永続しない)
   const subsHidden = new Set();
 
@@ -726,7 +725,7 @@
     box.replaceChildren();
     legend.replaceChildren();
     const ms = periodMonths();
-    // 期間内に支払のある系列だけ描く(終了して久しい系列で凡例を汚さない)
+    // 期間内に支払のある系列だけ描く(終了して久しい系列で凡例を増やさない)
     const all = KB.declaredSubs()
       .filter((s) => s.kind !== "fixed" && ms.some((m) => s.series.has(m)));
     $("#subs-history-card").style.display = all.length ? "" : "none";
